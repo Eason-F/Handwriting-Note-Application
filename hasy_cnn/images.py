@@ -31,7 +31,6 @@ def crop_and_center_drawing(
     image: Image.Image,
     margin_ratio: float = 0.25,
 ) -> Optional[Image.Image]:
-    """Crop black ink from a white canvas and center it like a HASY image."""
     grayscale = image.convert("L")
     ink = ImageOps.invert(grayscale)
     bounding_box = ink.point(lambda value: 255 if value > 20 else 0).getbbox()
@@ -39,14 +38,25 @@ def crop_and_center_drawing(
         return None
 
     cropped = grayscale.crop(bounding_box)
-    side = max(cropped.size)
-    margin = max(4, round(side * margin_ratio))
-    canvas_side = side + 2 * margin
+    
+    # 1. Add proportional margins to height and width independently
+    pad_w = max(4, round(cropped.width * margin_ratio))
+    pad_h = max(4, round(cropped.height * margin_ratio))
+    
+    padded_width = cropped.width + 2 * pad_w
+    padded_height = cropped.height + 2 * pad_h
+    
+    # 2. Make the final canvas a perfect square based on the largest padded side
+    canvas_side = max(padded_width, padded_height)
+    
+    # 3. Create white canvas and paste the cropped image perfectly centered
     centered = Image.new("L", (canvas_side, canvas_side), color=255)
     position = (
         (canvas_side - cropped.width) // 2,
         (canvas_side - cropped.height) // 2,
     )
     centered.paste(cropped, position)
+    
     return centered.resize((IMAGE_SIZE, IMAGE_SIZE), Image.Resampling.LANCZOS)
+
 

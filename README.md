@@ -42,6 +42,19 @@ The included local checkpoint was trained for eight epochs on fold 1 and reached
 ignored by Git because they are generated files; rerunning the command recreates
 one locally.
 
+To strengthen digits and Latin letters, mix EMNIST ByClass through TFDS:
+
+```bash
+python -m hasy_cnn.train --with-emnist --epochs 8
+```
+
+TFDS downloads EMNIST into `data/tfds` on the first run and prepares a
+random-access Parquet copy under `data/tfds/parquet`. The adapter corrects
+its orientation, changes it to black ink on white, resizes it to 32x32, and
+maps it into the HASY vocabulary. A weighted sampler draws half of each epoch
+from HASY and half from EMNIST so the larger dataset does not overwhelm the
+mathematical symbols.
+
 ## Test in the GUI
 
 ```bash

@@ -2,3 +2,7 @@ torch>=2.6
 Pillow>=11
 PySide6>=6.8
 numpy>=2.0
+tensorflow-datasets>=4.9.9
+tensorflow>=2.20
+array-record>=0.8
+importlib-resources>=6.5
