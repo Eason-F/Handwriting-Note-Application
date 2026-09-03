@@ -2,7 +2,6 @@ from torch import nn
 
 
 class SymbolCNN(nn.Module):
-    """A compact classifier for 32x32 grayscale symbol images."""
 
     def __init__(self, number_of_classes: int = 369) -> None:
         super().__init__()

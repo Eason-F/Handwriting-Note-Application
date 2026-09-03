@@ -144,14 +144,14 @@ def main():
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default=Path("checkpoints/hasy_cnn.pt"),
+        default=Path("checkpoints/math_cnn.pt"),
     )
     parser.add_argument("--device", default="auto")
     args = parser.parse_args()
     if not args.checkpoint.exists():
         raise SystemExit(
             f"Checkpoint not found: {args.checkpoint}\n"
-            "Train it first with: python -m hasy_cnn.train"
+            "Train it first with: python -m math_cnn.train"
         )
 
     application = QApplication(sys.argv)

@@ -48,7 +48,7 @@ def evaluate(model, loader, loss_function, device):
 def parse_args():
     parser = argparse.ArgumentParser(description="Train the HASYv2 symbol CNN")
     parser.add_argument("--data", type=Path, default=Path("data"))
-    parser.add_argument("--output", type=Path, default=Path("checkpoints/hasy_cnn.pt"))
+    parser.add_argument("--output", type=Path, default=Path("checkpoints/math_cnn.pt"))
     parser.add_argument("--fold", type=int, default=1, choices=range(1, 11))
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch-size", type=int, default=256)
@@ -63,6 +63,7 @@ def parse_args():
     parser.add_argument(
             "--with-compacted-hasy",
             action="store_true",
+            default=True
         )
     parser.add_argument(
         "--tfds-data", type=Path, default=Path("data/tfds/parquet")

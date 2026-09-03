@@ -59,9 +59,6 @@ COMMON_GREEK_SYMBOLS = {
     r"\lambda",
     r"\mu",
     r"\pi",
-    r"\rho",
-    r"\sigma",
-    r"\phi",
     r"\omega",
 }
 
@@ -73,7 +70,9 @@ COMMON_MATHS_SYMBOLS = {
     r"\ast",
     r"\%",
     r"/",
-    r"\equiv"
+    r"\equiv",
+    r"\pi"
+    r"\sqrt{}"
 }
 
 @dataclass(frozen=True)
@@ -84,10 +83,13 @@ class SymbolInfo:
 
 EMNIST_BYCLASS_CHARACTERS = string.digits + string.ascii_uppercase + string.ascii_lowercase
 
+COMMON_MATH_ALPHANUMERIC = {"a", "b", "c", "x", "y", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", }
+
 def load_symbols(
     dataset_root: Path,
     allowed_greek: set[str] = COMMON_GREEK_SYMBOLS,
     allowed_maths: set[str] = COMMON_MATHS_SYMBOLS,
+    allowed_alphanumeric: set[str] = COMMON_MATH_ALPHANUMERIC,
     compacted: bool = False
 ) -> list[SymbolInfo]:
     symbols_file = dataset_root / "symbols.csv"
@@ -100,8 +102,11 @@ def load_symbols(
             latex = row["latex"]
             if latex in GREEK_SYMBOLS and latex not in allowed_greek:
                 continue
-            elif latex not in allowed_maths and latex not in allowed_greek and compacted:
-                continue
+            if compacted:
+                if latex in EMNIST_BYCLASS_CHARACTERS and latex not in allowed_alphanumeric:
+                    continue
+                elif not (latex in allowed_alphanumeric or latex in allowed_greek or latex in allowed_maths):
+                    continue
             symbols.append(SymbolInfo(int(row["symbol_id"]), latex))
     return sorted(symbols, key=lambda symbol: symbol.symbol_id)
 
@@ -112,6 +117,7 @@ def add_emnist_characters(symbols: list[SymbolInfo]) -> list[SymbolInfo]:
     existing = {symbol.latex for symbol in extended}
     next_id = max(symbol.symbol_id for symbol in extended) + 1
     for character in EMNIST_BYCLASS_CHARACTERS:
+        
         if character not in existing:
             extended.append(SymbolInfo(next_id, character))
             existing.add(character)
@@ -203,4 +209,4 @@ def fold_paths(dataset_root: Path, fold: int) -> tuple[Path, Path]:
 
 
 if __name__ == "__main__":
-    print(load_symbols(Path("data")))
+    print(load_symbols(Path("data"), compacted=True))
