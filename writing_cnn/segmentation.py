@@ -185,27 +185,37 @@ class ConjoinedCharacterSegmenter:
 
         return candidates
 
-    def find_split(self, word: np.ndarray, region: tuple[int, int]) -> int | None:
+    def find_split_candidates(self, word: np.ndarray, region: tuple[int, int], num_candidates: int = 5, smoothing_window: int = 3) -> list[int]:
         x1, x2 = region
+        width = x2 - x1
 
-        if x2 - x1 < self.min_character_width * 2:
-            return None
+        if width < self.min_character_width * 2:
+            return []
 
         projection = np.sum(word[:, x1:x2], axis=0).astype(float)
 
-        if projection.max() == 0:
-            return None
+        if smoothing_window > 1:
+            kernel = np.ones(smoothing_window) / smoothing_window
+            projection = np.convolve(projection, kernel, mode="same")
 
-        split_index = int(np.argmin(projection))
-        split = x1 + split_index
+        candidates = []
 
-        left_width = split - x1
-        right_width = x2 - split
+        for i in range(self.min_character_width, width - self.min_character_width):
+            if projection[i] <= projection[i - 1] and projection[i] <= projection[i + 1]:
+                candidates.append((projection[i], x1 + i))
 
-        if left_width < self.min_character_width or right_width < self.min_character_width:
-            return None
+        candidates.sort(key=lambda candidate: candidate[0])
 
-        return split
+        selected = []
+
+        for _, position in candidates:
+            if all(abs(position - existing) >= smoothing_window for existing in selected):
+                selected.append(position)
+
+            if len(selected) >= num_candidates:
+                break
+
+        return selected
 
     def evaluate_split(self, word: np.ndarray, region: tuple[int, int], split: int, model: torch.nn.Module, device: torch.device) -> tuple[float, int, int]:
         x1, x2 = region
@@ -213,11 +223,8 @@ class ConjoinedCharacterSegmenter:
         if split <= x1 or split >= x2:
             return 0.0, -1, -1
 
-        left = word[:, x1:split]
-        right = word[:, split:x2]
-
-        left = self.crop_to_ink(left)
-        right = self.crop_to_ink(right)
+        left = self.crop_to_ink(word[:, x1:split])
+        right = self.crop_to_ink(word[:, split:x2])
 
         left_image = Image.fromarray((~left * 255).astype(np.uint8), mode="L")
         right_image = Image.fromarray((~right * 255).astype(np.uint8), mode="L")
@@ -231,7 +238,7 @@ class ConjoinedCharacterSegmenter:
         left_prediction, left_confidence = self.predict(model, left_image, device)
         right_prediction, right_confidence = self.predict(model, right_image, device)
 
-        score = np.sqrt(left_confidence * right_confidence)
+        score = min(left_confidence, right_confidence)
 
         return score, left_prediction, right_prediction
 
@@ -251,36 +258,58 @@ class ConjoinedCharacterSegmenter:
 
         return confidence, prediction
 
-    def should_split(self, unsplit_confidence: float, split_score: float, minimum_split_score: float = 0.6, split_margin: float = 1.15) -> bool:
+    def should_split(self, unsplit_confidence: float, split_score: float, minimum_split_score: float = 0.65, split_margin: float = 0.10) -> bool:
         if split_score < minimum_split_score:
             return False
 
-        return split_score > unsplit_confidence * split_margin
+        return split_score > unsplit_confidence + split_margin
+    
+    def find_best_split(self, word: np.ndarray, region: tuple[int, int], model: torch.nn.Module, device: torch.device) -> tuple[int | None, float, int, int]:
+        unsplit_confidence, _ = self.evaluate_unsplit(word, region, model, device)
+
+        best_split = None
+        best_score = 0.0
+        best_left_prediction = -1
+        best_right_prediction = -1
+
+        candidates = self.find_split_candidates(word, region)
+
+        for split in candidates:
+            score, left_prediction, right_prediction = self.evaluate_split(word, region, split, model, device)
+            print(f"    Split {split}: score={score:.3f}, left={left_prediction}, right={right_prediction}")
+
+            if score > best_score:
+                best_split = split
+                best_score = score
+                best_left_prediction = left_prediction
+                best_right_prediction = right_prediction
+
+        if best_split is None:
+            return None, best_score, -1, -1
+
+        if not self.should_split(unsplit_confidence, best_score):
+            return None, best_score, best_left_prediction, best_right_prediction
+
+        return best_split, best_score, best_left_prediction, best_right_prediction
 
     def process(self, word: np.ndarray, character_regions: list[tuple[int, int]], model: torch.nn.Module, device: torch.device) -> list[tuple[int, int]]:
         regions = character_regions.copy()
 
-        candidates = self.find_candidates(word, regions)
-
-        for candidate in candidates:
-            if candidate not in regions:
+        for region in self.find_candidates(word, regions):
+            if region not in regions:
                 continue
 
-            split = self.find_split(word, candidate)
+            split, score, _, _ = self.find_best_split(word, region, model, device)
 
             if split is None:
                 continue
 
-            unsplit_confidence, _ = self.evaluate_unsplit(word, candidate, model, device)
-            split_score, _, _ = self.evaluate_split(word, candidate, split, model, device)
+            index = regions.index(region)
 
-            if self.should_split(unsplit_confidence, split_score):
-                index = regions.index(candidate)
-
-                regions[index:index + 1] = [
-                    (candidate[0], split),
-                    (split, candidate[1]),
-                ]
+            regions[index:index + 1] = [
+                (region[0], split),
+                (split, region[1]),
+            ]
 
         return regions
 
