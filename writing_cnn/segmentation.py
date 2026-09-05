@@ -108,7 +108,7 @@ def find_gap_widths(line: np.ndarray) -> list[tuple[int, int, int]]:
 
     return gaps
     
-def find_word_regions(line: np.ndarray, word_gap_threshold: int = 6) -> list[tuple[int, int]]:
+def find_word_regions(line: np.ndarray, word_gap_threshold: int = 8) -> list[tuple[int, int]]:
     projection = np.sum(line, axis=0)
     active = projection > 0
 
@@ -159,6 +159,43 @@ def find_character_regions(word: np.ndarray) -> list[tuple[int, int]]:
 
     return regions
 
+def find_conjoined_character_candidates(word: np.ndarray, character_regions: list[tuple[int, int]], width_multiplier: float = 1.8) -> list[tuple[int, int]]:
+    if len(character_regions) < 2:
+        return []
+
+    widths = np.array([x2 - x1 for x1, x2 in character_regions], dtype=float)
+    median_width = np.median(widths)
+    
+    suspicious = []
+    for x1, x2 in character_regions:
+        width = x2 - x1
+
+        if width > median_width * width_multiplier:
+            suspicious.append((x1, x2))
+
+    return suspicious
+
+def find_conjoined_split(word: np.ndarray, region: tuple[int, int], window: int = 3) -> int | None:
+    x1, x2 = region
+
+    projection = np.sum(word[:, x1:x2], axis=0).astype(float)
+
+    if len(projection) < window * 2 + 1:
+        return None
+
+    kernel = np.ones(window) / window
+    smoothed = np.convolve(projection, kernel, mode="same")
+
+    margin = window
+    search = smoothed[margin:-margin]
+
+    if len(search) == 0:
+        return None
+
+    split_index = int(np.argmin(search)) + margin
+
+    return x1 + split_index
+
 def crop_characters(word: np.ndarray, character_regions: list[tuple[int, int]]) -> list[Image.Image]:
     characters = []
 
@@ -184,58 +221,218 @@ def predict_character(model: torch.nn.Module, character: Image.Image, device: to
     confidence, prediction = probabilities.max(dim=1)
 
     return prediction.item(), confidence.item()
+
+def evaluate_conjoined_split(word: np.ndarray, region: tuple[int, int], split: int, model: torch.nn.Module, device: torch.device) -> tuple[float, int, int]:
+    x1, x2 = region
+
+    if split <= x1 or split >= x2:
+        return 0.0, -1, -1
+
+    left = word[:, x1:split]
+    right = word[:, split:x2]
+
+    left = crop_to_ink(left)
+    right = crop_to_ink(right)
+
+    left_image = Image.fromarray((~left * 255).astype(np.uint8), mode="L")
+    right_image = Image.fromarray((~right * 255).astype(np.uint8), mode="L")
+
+    left_image = crop_and_center_drawing(left_image)
+    right_image = crop_and_center_drawing(right_image)
+
+    if left_image is None or right_image is None:
+        return 0.0, -1, -1
+
+    left_prediction, left_confidence = predict_character(model, left_image, device)
+    right_prediction, right_confidence = predict_character(model, right_image, device)
+
+    score = left_confidence * right_confidence
+
+    return score, left_prediction, right_prediction
+
+def evaluate_unsplit_character(word: np.ndarray, region: tuple[int, int], model: torch.nn.Module, device: torch.device) -> tuple[float, int]:
+    x1, x2 = region
+
+    character = word[:, x1:x2]
+    character = crop_to_ink(character)
+
+    image = Image.fromarray((~character * 255).astype(np.uint8), mode="L")
+    image = crop_and_center_drawing(image)
+
+    if image is None:
+        return 0.0, -1
+
+    prediction, confidence = predict_character(model, image, device)
+
+    return confidence, prediction
+
+def should_split(unsplit_confidence: float, split_score: float, minimum_split_score: float = 0.6, split_margin: float = 1.15) -> bool:
+    if split_score < minimum_split_score:
+        return False
+
+    return split_score > unsplit_confidence * split_margin
+
+def evaluate_conjoined_split(word: np.ndarray, region: tuple[int, int], split: int, model: torch.nn.Module, device: torch.device) -> tuple[float, int, int]:
+    x1, x2 = region
+
+    if split <= x1 or split >= x2:
+        return 0.0, -1, -1
+
+    left = crop_to_ink(word[:, x1:split])
+    right = crop_to_ink(word[:, split:x2])
+
+    left_image = Image.fromarray((~left * 255).astype(np.uint8), mode="L")
+    right_image = Image.fromarray((~right * 255).astype(np.uint8), mode="L")
+
+    left_image = crop_and_center_drawing(left_image)
+    right_image = crop_and_center_drawing(right_image)
+
+    if left_image is None or right_image is None:
+        return 0.0, -1, -1
+
+    left_prediction, left_confidence = predict_character(model, left_image, device)
+    right_prediction, right_confidence = predict_character(model, right_image, device)
+
+    score = left_confidence * right_confidence
+
+    return score, left_prediction, right_prediction
+    
     
 if __name__ == "__main__":
     from .data import EMNIST_BYCLASS_CHARACTERS
-    
-    image = Image.open("data/test_short.png")
+
+    IMAGE_PATH = "data/test_short.png"
+    CHECKPOINT_PATH = "checkpoints/writing_cnn.pt"
+
+    MIN_INK_PIXELS = 8
+    MAX_INTERNAL_GAP = 2
+    MIN_LINE_HEIGHT = 10
+    WORD_GAP_THRESHOLD = 8
+    CONJOINED_WIDTH_MULTIPLIER = 1.8
+
+    from pathlib import Path
+    import shutil
+
+    results_dir = Path("test_results")
+
+    if results_dir.exists():
+        shutil.rmtree(results_dir)
+
+    results_dir.mkdir()
+
+    # Load image
+    image = Image.open(IMAGE_PATH).convert("L")
+
+    print(f"Original image size: {image.size}")
+
+    # Binary image
     binary = convert_image_binary(image)
+
+    print(f"Binary shape: {binary.shape}")
+    print(f"Handwriting pixels: {np.sum(binary)}")
+    print(f"Foreground percentage: {100 * np.mean(binary):.2f}%")
+
     binary_image = Image.fromarray((~binary * 255).astype(np.uint8), mode="L")
-    binary_image.save("binary_test.png")
+    binary_image.save(results_dir / "binary_test.png")
+
+    # Writing region
     writing = find_writing_boundaries(binary)
-    print("Image shape:", binary.shape)
-    print("Handwriting pixels:", np.sum(binary))
-    print("Percentage:", 100 * np.mean(binary))
-    
-    line_regions = find_line_regions(writing, min_ink_pixels=8, max_internal_gap=2, min_line_height=10)
-    line_regions = filter_line_regions(line_regions, min_height=10)
-    lines = crop_lines(binary, line_regions)
-    
-    print("Number of lines:", len(line_regions))
-    for i, (y1, y2) in enumerate(line_regions):
-        print(f"Line {i}: y={y1}..{y2}, height={y2 - y1}, ")
-        
-    for i, line in enumerate(lines):
-        print(f"Line {i}: shape={line.shape}")
-    
-    line = lines[0]
-    word_regions = find_word_regions(line, word_gap_threshold=8)
-    print(word_regions)
-    
-    gaps = find_gap_widths(lines[0])
 
-    words = []
-    for x1, x2 in word_regions:
-        word = line[:, x1:x2]
-        word = crop_to_ink(word)
-        words.append(word)
-        
-    word = words[1]
-    character_regions = find_character_regions(word)
-    characters = crop_characters(word, character_regions)
+    print(f"Writing region shape: {writing.shape}")
 
-    for i, character in enumerate(characters):
-        character.save(f"{i}.png")
+    writing_image = Image.fromarray((~writing * 255).astype(np.uint8), mode="L")
+    writing_image.save(results_dir / "writing_test.png")
 
+    # Line segmentation
+    line_regions = find_line_regions(writing, min_ink_pixels=MIN_INK_PIXELS, max_internal_gap=MAX_INTERNAL_GAP, min_line_height=MIN_LINE_HEIGHT)
+    line_regions = filter_line_regions(line_regions, min_height=MIN_LINE_HEIGHT)
+
+    print(f"\nNumber of lines: {len(line_regions)}")
+
+    lines = crop_lines(writing, line_regions)
+
+    for line_index, line in enumerate(lines):
+        print(f"Line {line_index}: shape={line.shape}")
+
+        line_dir = results_dir / f"line_{line_index}"
+        line_dir.mkdir()
+
+        line_image = Image.fromarray((~line * 255).astype(np.uint8), mode="L")
+        line_image.save(line_dir / "line.png")
+
+    # Load model
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    checkpoint = torch.load("checkpoints/writing_cnn.pt", map_location=device, weights_only=True)
+
+    print(f"\nDevice: {device}")
+
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device, weights_only=True)
+
     model = WritingCNN(checkpoint["number_of_classes"])
     model.load_state_dict(checkpoint["model_state"])
-    model.to(device).eval()
-    device = device
-    
-    for character_image in characters:
-        prediction, confidence = predict_character(model, character_image, device)
-        character = list(EMNIST_BYCLASS_CHARACTERS)[prediction]
+    model.to(device)
+    model.eval()
 
-        print(character, confidence)
+    class_names = list(EMNIST_BYCLASS_CHARACTERS)
+
+    # Word and character segmentation
+    for line_index, line in enumerate(lines):
+        print(f"\nLINE {line_index}")
+
+        line_dir = results_dir / f"line_{line_index}"
+
+        word_regions = find_word_regions(line, word_gap_threshold=WORD_GAP_THRESHOLD)
+
+        print(f"Number of words: {len(word_regions)}")
+
+        for word_index, (x1, x2) in enumerate(word_regions):
+            word_dir = line_dir / f"word_{word_index}"
+            word_dir.mkdir()
+
+            word = line[:, x1:x2]
+            word = crop_to_ink(word)
+
+            word_image = Image.fromarray((~word * 255).astype(np.uint8), mode="L")
+            word_image.save(word_dir / "word.png")
+
+            print(f"\nWord {word_index}: shape={word.shape}")
+
+            character_regions = find_character_regions(word)
+
+            print(f"Initial character regions: {len(character_regions)}")
+
+            # Conjoined character detection
+            conjoined_candidates = find_conjoined_character_candidates(word, character_regions, width_multiplier=CONJOINED_WIDTH_MULTIPLIER)
+
+            print(f"Conjoined candidates: {len(conjoined_candidates)}")
+
+            for candidate in conjoined_candidates:
+                split = find_conjoined_split(word, candidate)
+
+                print(f"  Candidate {candidate} -> proposed split: {split}")
+
+                if split is None:
+                    continue
+
+                split_score, left_prediction, right_prediction = evaluate_conjoined_split(word, candidate, split, model, device)
+
+                print(f"    Split score: {split_score:.3f}")
+
+                if 0 <= left_prediction < len(class_names):
+                    print(f"    Left prediction: {class_names[left_prediction]}")
+
+                if 0 <= right_prediction < len(class_names):
+                    print(f"    Right prediction: {class_names[right_prediction]}")
+
+            # Character crops and predictions
+            characters = crop_characters(word, character_regions)
+
+            print(f"Saving {len(characters)} character crops")
+
+            for character_index, character in enumerate(characters):
+                character.save(word_dir / f"character_{character_index}.png")
+
+                prediction, confidence = predict_character(model, character, device)
+
+                predicted_character = class_names[prediction] if 0 <= prediction < len(class_names) else "?"
+
+                print(f"  Character {character_index}: {predicted_character} (confidence={confidence:.3f})")
