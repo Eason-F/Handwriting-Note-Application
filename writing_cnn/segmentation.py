@@ -159,7 +159,7 @@ class CharacterSegmenter:
 
 
 class ConjoinedCharacterSegmenter:
-    def __init__(self, width_multiplier: float = 1.8, min_character_width: int = 5) -> None:
+    def __init__(self, width_multiplier: float = 1.5, min_character_width: int = 5):
         self.width_multiplier = width_multiplier
         self.min_character_width = min_character_width
 
@@ -168,17 +168,13 @@ class ConjoinedCharacterSegmenter:
             return []
 
         widths = np.array([x2 - x1 for x1, x2 in character_regions], dtype=float)
-        median_width = np.median(widths)
+        sorted_widths = np.sort(widths)
+        normal_count = max(1, len(sorted_widths) // 2)
+        normal_width = np.median(sorted_widths[:normal_count])
 
-        candidates = []
+        width_threshold = max(self.min_character_width * 2, normal_width * self.width_multiplier)
 
-        for x1, x2 in character_regions:
-            width = x2 - x1
-
-            if width > median_width * self.width_multiplier:
-                candidates.append((x1, x2))
-
-        return candidates
+        return [region for region in character_regions if region[1] - region[0] >= width_threshold]
 
     def find_split_candidates(self, word: np.ndarray, region: tuple[int, int], num_candidates: int = 5, smoothing_window: int = 3) -> list[int]:
         x1, x2 = region
@@ -212,11 +208,11 @@ class ConjoinedCharacterSegmenter:
 
         return selected
 
-    def evaluate_split(self, word: np.ndarray, region: tuple[int, int], split: int, model: torch.nn.Module, device: torch.device) -> tuple[float, int, int]:
+    def evaluate_split(self, word: np.ndarray, region: tuple[int, int], split: int, model: torch.nn.Module, device: torch.device) -> tuple[float, int, int, float, float]:
         x1, x2 = region
 
         if split <= x1 or split >= x2:
-            return 0.0, -1, -1
+            return 0.0, -1, -1, 0.0, 0.0
 
         left = self.crop_to_ink(word[:, x1:split])
         right = self.crop_to_ink(word[:, split:x2])
@@ -228,14 +224,14 @@ class ConjoinedCharacterSegmenter:
         right_image = crop_and_center_drawing(right_image)
 
         if left_image is None or right_image is None:
-            return 0.0, -1, -1
+            return 0.0, -1, -1, 0.0, 0.0
 
         left_prediction, left_confidence = self.predict(model, left_image, device)
         right_prediction, right_confidence = self.predict(model, right_image, device)
 
         score = min(left_confidence, right_confidence)
 
-        return score, left_prediction, right_prediction
+        return score, left_prediction, right_prediction, left_confidence, right_confidence
 
     def evaluate_unsplit(self, word: np.ndarray, region: tuple[int, int], model: torch.nn.Module, device: torch.device) -> tuple[float, int]:
         x1, x2 = region
@@ -253,11 +249,9 @@ class ConjoinedCharacterSegmenter:
 
         return confidence, prediction
 
-    def should_split(self, unsplit_confidence: float, split_score: float, minimum_split_score: float = 0.65, split_margin: float = 0.10) -> bool:
-        if split_score < minimum_split_score:
-            return False
-
-        return split_score > unsplit_confidence + split_margin
+    def should_split(self, split_score: float, unsplit_confidence: float, required_improvement: float = 0.10, minimum_split_score: float = 0.65) -> bool:
+        improvement = split_score - unsplit_confidence
+        return split_score >= minimum_split_score and improvement >= required_improvement
     
     def find_best_split(self, word: np.ndarray, region: tuple[int, int], model: torch.nn.Module, device: torch.device) -> tuple[int | None, float, int, int]:
         unsplit_confidence, _ = self.evaluate_unsplit(word, region, model, device)
@@ -269,9 +263,10 @@ class ConjoinedCharacterSegmenter:
 
         candidates = self.find_split_candidates(word, region)
 
+        print(f"Region {region}, unsplit={unsplit_confidence}")
         for split in candidates:
-            score, left_prediction, right_prediction = self.evaluate_split(word, region, split, model, device)
-            print(f"    Split {split}: score={score:.3f}, left={left_prediction}, right={right_prediction}")
+            score, left_prediction, right_prediction, left_confidence, right_confidence = self.evaluate_split(word, region, split, model, device)
+            print(f"    Split {split}: score={score:.3f}, left={left_prediction} ({left_confidence:.3f}), right={right_prediction} ({right_confidence:.3f})")
 
             if score > best_score:
                 best_split = split
@@ -282,8 +277,11 @@ class ConjoinedCharacterSegmenter:
         if best_split is None:
             return None, best_score, -1, -1
 
-        if not self.should_split(unsplit_confidence, best_score):
+        print(f"    Best split: {best_split}, score={best_score:.3f}, unsplit={unsplit_confidence:.3f}")
+        print(f"    Should split: {self.should_split(best_score, unsplit_confidence)}")
+        if not self.should_split(best_score, unsplit_confidence):
             return None, best_score, best_left_prediction, best_right_prediction
+        print(f"    Applying split at {best_split}")
 
         return best_split, best_score, best_left_prediction, best_right_prediction
 

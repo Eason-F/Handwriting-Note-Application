@@ -1,7 +1,10 @@
 from pathlib import Path
 import shutil
+import torch
+from PIL import Image
+import numpy as np
 
-from writing_cnn.segmentation import *
+from writing_cnn.segmentation import LineSegmenter, WordSegmenter, CharacterSegmenter, ConjoinedCharacterSegmenter, SegmentationPipeline
 from writing_cnn.data import EMNIST_BYCLASS_CHARACTERS
 from writing_cnn.model import WritingCNN
 
