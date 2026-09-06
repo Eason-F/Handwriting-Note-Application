@@ -16,16 +16,19 @@ from writing_cnn.segmentation import (
 )
 
 
+# Paths
+
 IMAGE_PATH = "data/test_short.png"
 CHECKPOINT_PATH = "checkpoints/writing_cnn.pt"
 RESULTS_DIR = Path("test_results")
 
 
+# Setup
+
 if RESULTS_DIR.exists():
     shutil.rmtree(RESULTS_DIR)
 
 RESULTS_DIR.mkdir()
-
 
 device = torch.device(
     "mps" if torch.backends.mps.is_available() else "cpu"
@@ -52,6 +55,8 @@ model.to(device)
 model.eval()
 
 
+# Segmentation
+
 line_segmenter = LineSegmenter(
     min_ink_pixels=8,
     max_internal_gap=2,
@@ -59,7 +64,6 @@ line_segmenter = LineSegmenter(
 )
 
 word_segmenter = WordSegmenter()
-
 character_segmenter = CharacterSegmenter()
 
 conjoined_segmenter = ConjoinedCharacterSegmenter(
@@ -78,11 +82,7 @@ prediction_pipeline = PredictionPipeline(
     list(EMNIST_BYCLASS_CHARACTERS)
 )
 
-
-image = Image.open(
-    IMAGE_PATH
-).convert("L")
-
+image = Image.open(IMAGE_PATH).convert("L")
 
 segmented = segmentation_pipeline.segment(
     image,
@@ -91,10 +91,11 @@ segmented = segmentation_pipeline.segment(
 )
 
 
+# Segmentation output
+
 print("\n" + "=" * 60)
 print("SEGMENTATION")
 print("=" * 60)
-
 
 for line_index, line in enumerate(segmented):
     print(
@@ -121,10 +122,11 @@ for line_index, line in enumerate(segmented):
             )
 
 
+# CNN character predictions
+
 print("\n" + "=" * 60)
 print("CNN TOP-5 PREDICTIONS")
 print("=" * 60)
-
 
 for line_index, line in enumerate(segmented):
     print(f"\nLine {line_index}:")
@@ -137,8 +139,7 @@ for line_index, line in enumerate(segmented):
 
         for character_index, character in enumerate(word):
             candidates = (
-                prediction_pipeline
-                .predict_character_candidates(
+                prediction_pipeline.predict_character_candidates(
                     model,
                     character,
                     device,
@@ -146,15 +147,9 @@ for line_index, line in enumerate(segmented):
                 )
             )
 
-            print(
-                f"\n    Character "
-                f"{character_index}:"
-            )
+            print(f"\n    Character {character_index}:")
 
-            for rank, (
-                prediction,
-                confidence,
-            ) in enumerate(
+            for rank, (prediction, confidence) in enumerate(
                 candidates,
                 start=1,
             ):
@@ -165,79 +160,87 @@ for line_index, line in enumerate(segmented):
                 )
 
 
+# Word prediction methods
+
+methods = (
+    "cnn",
+    "wordfreq",
+    "hybrid",
+    "wordfreq_hybrid",
+)
+
 print("\n" + "=" * 60)
 print("WORD CANDIDATES")
 print("=" * 60)
-
 
 for line_index, line in enumerate(segmented):
     print(f"\nLine {line_index}:")
 
     for word_index, word in enumerate(line):
-        candidates = (
-            prediction_pipeline
-            .predict_word_candidates(
+        print(
+            f"\n  Word {word_index}: "
+            f"{len(word)} characters"
+        )
+
+        for method in methods:
+            candidates = prediction_pipeline.predict_word(
                 model,
                 word,
                 device,
-                k=5,
+                method=method,
+                character_top_k=5,
                 beam_width=10,
-            )
-        )
-
-        reranked = (
-            prediction_pipeline
-            .rerank_word_candidates(
-                candidates,
                 frequency_weight=0.20,
-                language_weight=0.35,
+                lm_weight=0.35,
+                limit=5,
             )
+
+            print(f"\n    {method}:")
+
+            for rank, (text, score) in enumerate(
+                candidates,
+                start=1,
+            ):
+                print(
+                    f"      {rank}. "
+                    f"{text:<20} "
+                    f"score={score:.4f}"
+                )
+
+
+# Wordfreq + LM details
+
+print("\n" + "=" * 60)
+print("WORD DETAILS")
+print("=" * 60)
+
+for line_index, line in enumerate(segmented):
+    print(f"\nLine {line_index}:")
+
+    for word_index, word in enumerate(line):
+        candidates = prediction_pipeline.predict_word(
+            model,
+            word,
+            device,
+            method="wordfreq_hybrid",
+            character_top_k=5,
+            beam_width=10,
+            frequency_weight=0.20,
+            lm_weight=0.35,
+            limit=5,
         )
 
-        print(
-            f"\n  Word {word_index}:"
-        )
+        print(f"\n  Word {word_index}:")
 
-        print("    CNN:")
-
-        for rank, (
-            text,
-            score,
-        ) in enumerate(
+        for rank, (text, score) in enumerate(
             candidates,
             start=1,
         ):
-            print(
-                f"      {rank}. "
-                f"{text:<20} "
-                f"score={score:.4f}"
-            )
-
-        print("    Wordfreq + LM:")
-
-        for rank, (
-            text,
-            score,
-        ) in enumerate(
-            reranked,
-            start=1,
-        ):
-            frequency = (
-                prediction_pipeline
-                .word_frequency_score(
-                    text
-                )
-            )
-
-            language = (
-                prediction_pipeline
-                .language_score(
-                    text
-                )
-            )
+            frequency = prediction_pipeline.wordfreq_score(text)
+            language = prediction_pipeline.lm_score(text)
 
             print(
-                f"      {rank}. "
+                f"    {rank}. "
                 f"{text:<20} "
                 f"score={score:.4f} "
                 f"freq={frequency:.2f} "
@@ -245,89 +248,99 @@ for line_index, line in enumerate(segmented):
             )
 
 
+# Final outputs
+
 print("\n" + "=" * 60)
-print("FINAL WORD-FREQUENCY + LM OUTPUT")
+print("FINAL OUTPUTS")
 print("=" * 60)
 
-
-final_lines = []
+outputs = {method: [] for method in methods}
 
 for line in segmented:
-    final_words = []
+    for method in methods:
+        outputs[method].append([])
 
     for word in line:
-        candidates = (
-            prediction_pipeline
-            .predict_word_candidates(
+        for method in methods:
+            candidates = prediction_pipeline.predict_word(
                 model,
                 word,
                 device,
-                k=5,
+                method=method,
+                character_top_k=5,
                 beam_width=10,
-            )
-        )
-
-        reranked = (
-            prediction_pipeline
-            .rerank_word_candidates(
-                candidates,
                 frequency_weight=0.20,
-                language_weight=0.35,
-            )
-        )
-
-        if reranked:
-            final_words.append(
-                reranked[0][0]
-            )
-        elif candidates:
-            final_words.append(
-                candidates[0][0]
+                lm_weight=0.35,
+                limit=5,
             )
 
-    final_lines.append(
-        " ".join(final_words)
-    )
+            if candidates:
+                outputs[method][-1].append(
+                    candidates[0][0]
+                )
+            else:
+                outputs[method][-1].append("")
 
 
-final_text = "\n".join(
-    final_lines
-)
+for method in methods:
+    outputs[method] = [
+        " ".join(line)
+        for line in outputs[method]
+    ]
 
-print(final_text)
 
+print("\nCNN:")
+print("\n".join(outputs["cnn"]))
+
+print("\nWordFreq:")
+print("\n".join(outputs["wordfreq"]))
+
+print("\nHybrid:")
+print("\n".join(outputs["hybrid"]))
+
+print("\nWordFreq + LM:")
+print("\n".join(outputs["wordfreq_hybrid"]))
+
+
+# Direct pipeline output
 
 print("\n" + "=" * 60)
-print("ORIGINAL CNN TOP-1 OUTPUT")
+print("PREDICTION PIPELINE OUTPUT")
 print("=" * 60)
-
 
 predictions = prediction_pipeline.predict(
     segmented,
     model,
     device,
+    method="wordfreq_hybrid",
+    character_top_k=5,
+    beam_width=10,
+    frequency_weight=0.20,
+    lm_weight=0.35,
 )
 
-parsed_lines = []
+parsed_lines = [
+    " ".join(line)
+    for line in predictions
+]
 
-for line_index, line in enumerate(predictions):
-    parsed_line = " ".join(line)
-    parsed_lines.append(parsed_line)
+print("\n".join(parsed_lines))
 
-    print(
-        f"Line {line_index}: "
-        f"{parsed_line}"
-    )
 
+# Comparison
 
 print("\n" + "=" * 60)
 print("COMPARISON")
 print("=" * 60)
 
 print("\nCNN:")
-print(
-    "\n".join(parsed_lines)
-)
+print("\n".join(outputs["cnn"]))
 
-print("\nWordfreq + LM:")
-print(final_text)
+print("\nWordFreq:")
+print("\n".join(outputs["wordfreq"]))
+
+print("\nHybrid:")
+print("\n".join(outputs["hybrid"]))
+
+print("\nWordFreq + LM:")
+print("\n".join(outputs["wordfreq_hybrid"]))

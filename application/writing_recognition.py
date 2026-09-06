@@ -7,6 +7,7 @@ except ImportError:
     torch = None
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
+import numpy as np
 
 from writing_cnn.data import EMNIST_BYCLASS_CHARACTERS
 from writing_cnn.model import WritingCNN
@@ -104,41 +105,24 @@ class HandwritingRecognizer:
         segmented = self.segment(image)
         segmentation_ms = (time.perf_counter() - segmentation_started) * 1000
 
-        final_lines = []
-        raw_lines = []
-        words = 0
-        characters = 0
-
-        for line in segmented:
-            final_words = []
-            raw_words = []
-            for word in line:
-                words += 1
-                characters += len(word)
-                raw = ''
-                for character in word:
-                    prediction, _ = self.pipeline.predict_character(self.model, character, self.device)
-                    raw += self.pipeline.characters[prediction]
-                raw_words.append(raw)
-                candidates = self.pipeline.predict_word_candidates(
-                    self.model,
-                    word,
-                    self.device,
-                    k=5,
-                    beam_width=10,
-                )
-                reranked = self.pipeline.rerank_word_candidates(
-                    candidates,
-                    frequency_weight=0.20,
-                    language_weight=0.35,
-                )
-                final_words.append(reranked[0][0] if reranked else candidates[0][0] if candidates else '')
-            raw_lines.append(' '.join(raw_words))
-            final_lines.append(' '.join(final_words))
+        final_lines = self.pipeline.predict(
+            segmented, 
+            self.model, 
+            self.device, 
+            method="wordfreq_hybrid"
+        )
+        raw_lines = self.pipeline.predict(
+            segmented, 
+            self.model, 
+            self.device, 
+            method="cnn"
+        )
+        words = np.array(final_lines).size
+        characters = np.array(self.segment).size
 
         return RecognitionResult(
-            text='\n'.join(final_lines),
-            raw_text='\n'.join(raw_lines),
+            text='\n'.join([' '.join(word) for word in final_lines]),
+            raw_text='\n'.join([' '.join(word) for word in raw_lines]),
             elapsed_ms=(time.perf_counter() - started) * 1000,
             lines=len(segmented),
             words=words,
