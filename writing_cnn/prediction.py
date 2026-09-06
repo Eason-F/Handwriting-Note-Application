@@ -1,6 +1,8 @@
 from PIL import Image
 
 import torch
+import numpy as np
+import cv2
 
 from math_cnn.images import prepare_symbol_image
 
@@ -27,13 +29,19 @@ class PredictionPipeline:
 
         return result
     
-    def predict_character(self, model: torch.nn.Module, character: Image.Image, device: torch.device) -> tuple[int, float]:
-        tensor = prepare_symbol_image(character).unsqueeze(0).to(device)
+    def dilate_character(self, image: Image.Image) -> Image.Image:
+        image_array = np.asarray(image).copy()
+        image_array = np.where(image_array < 170, 255, 0).astype(np.uint8)
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        dilated = cv2.dilate(image_array, kernel, iterations=1)
+        return Image.fromarray(255 - dilated)
 
+    def predict_character(self, model: torch.nn.Module, character: Image.Image, device: torch.device) -> tuple[int, float]:
+        character = self.dilate_character(character)
+        # character.show()
+        tensor = prepare_symbol_image(character).unsqueeze(0).to(device)
         with torch.inference_mode():
             output = model(tensor)
             probabilities = torch.softmax(output, dim=1)
-
         confidence, prediction = probabilities.max(dim=1)
-
         return prediction.item(), confidence.item()

@@ -13,6 +13,7 @@ class WritingCNN(nn.Module):
             nn.Conv2d(32, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
+            
             nn.MaxPool2d(2),
 
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
@@ -22,6 +23,7 @@ class WritingCNN(nn.Module):
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
+            
             nn.MaxPool2d(2),
 
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
@@ -36,10 +38,10 @@ class WritingCNN(nn.Module):
         )
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 4 * 4, 256),
+            nn.Linear(128 * 4 * 4, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.2),
-            nn.Linear(256, number_of_classes),
+            nn.Linear(512, number_of_classes),
         )
 
     def forward(self, images):
