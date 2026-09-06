@@ -29,30 +29,56 @@ class PredictionPipeline:
 
         return result
     
-    def normalize_stroke_thickness(self, image: Image.Image) -> Image.Image:
+    @staticmethod
+    def estimate_stroke_width(ink: np.ndarray) -> float:
+        if not np.any(ink):
+            return 0.0
+
+        distance = cv2.distanceTransform(
+            ink.astype(np.uint8),
+            cv2.DIST_L2,
+            5,
+        )
+
+        distances = distance[ink > 0]
+
+        if len(distances) == 0:
+            return 0.0
+
+        return float(np.median(distances) * 2.0)
+    
+    def normalize_stroke_thickness(self, image: Image.Image, target_width: float = 2.25, tolerance: float = 0.36) -> Image.Image:
         image_array = np.asarray(image.convert("L"))
         ink = image_array < 128
 
         if not np.any(ink):
             return image
 
-        ys, xs = np.where(ink)
-        x1, x2 = xs.min(), xs.max() + 1
-        y1, y2 = ys.min(), ys.max() + 1
+        width = self.estimate_stroke_width(ink)
+        print(f"Stroke width: {width:.2f}px")
 
-        character = ink[y1:y2, x1:x2]
-        ink_ratio = character.mean()
+        kernel = np.ones((3, 3), dtype=np.uint8)
 
-        print(ink_ratio)
-        if ink_ratio < 0.2:
-            kernel = np.ones((3, 3), dtype=np.uint8)
-            character = cv2.dilate(character.astype(np.uint8), kernel, iterations=1).astype(bool)
-        elif ink_ratio > 0.48:
-            kernel = np.ones((3, 3), dtype=np.uint8)
-            character = cv2.erode(character.astype(np.uint8), kernel, iterations=1).astype(bool)
+        for _ in range(2):
+            if target_width - tolerance <= width <= target_width + tolerance:
+                break
+
+            if width < target_width:
+                ink = cv2.dilate(ink.astype(np.uint8), kernel, iterations=1).astype(bool)
+            else:
+                eroded = cv2.erode(ink.astype(np.uint8), kernel, iterations=1).astype(bool)
+
+                if not np.any(eroded):
+                    break
+
+                ink = eroded
+
+            width = self.estimate_stroke_width(ink)
+
+        print(f"Stroke width after: {width:.2f}px")
 
         output = np.full_like(image_array, 255)
-        output[y1:y2, x1:x2][character] = 0
+        output[ink] = 0
 
         return Image.fromarray(output)
 
