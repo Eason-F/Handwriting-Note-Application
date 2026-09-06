@@ -1,9 +1,9 @@
 from collections import Counter
 
-from PIL import Image
 import cv2
 import numpy as np
 import torch
+from PIL import Image
 from wordfreq import top_n_list, zipf_frequency
 
 from math_cnn.images import prepare_symbol_image
@@ -22,6 +22,7 @@ class CharacterLanguageModel:
     def _build(self, vocabulary_size):
         for word in top_n_list("en", vocabulary_size, wordlist="best"):
             word = "".join(c for c in word.lower() if c.isalpha())
+
             if not word:
                 continue
 
@@ -35,21 +36,26 @@ class CharacterLanguageModel:
                 self.counts[(context, character)] += weight
                 self.contexts[context] += weight
 
+    def next_log_probability(self, prefix, character):
+        context = ("^" * (self.n - 1) + prefix)[-(self.n - 1):]
+        numerator = self.counts[(context, character)] + self.smoothing
+        denominator = self.contexts[context] + self.smoothing * 27
+        return float(np.log(numerator / denominator))
+
     def score(self, word):
         word = "".join(c for c in word.lower() if c.isalpha())
+
         if not word:
             return -20.0
 
-        text = "^" * (self.n - 1) + word + "$"
         score = 0.0
+        prefix = ""
 
-        for i in range(len(text) - self.n + 1):
-            context = text[i:i + self.n - 1]
-            character = text[i + self.n - 1]
-            numerator = self.counts[(context, character)] + self.smoothing
-            denominator = self.contexts[context] + self.smoothing * 27
-            score += np.log(numerator / denominator)
+        for character in word:
+            score += self.next_log_probability(prefix, character)
+            prefix += character
 
+        score += self.next_log_probability(prefix, "$")
         return float(score)
 
 
@@ -69,7 +75,11 @@ class PredictionPipeline:
         if not np.any(ink):
             return 0.0
 
-        distance = cv2.distanceTransform(ink.astype(np.uint8), cv2.DIST_L2, 5)
+        distance = cv2.distanceTransform(
+            ink.astype(np.uint8),
+            cv2.DIST_L2,
+            5,
+        )
         values = distance[distance > 0]
 
         return float(np.median(values) * 2) if len(values) else 0.0
@@ -91,10 +101,18 @@ class PredictionPipeline:
                 break
 
             if width < target_width:
-                ink = cv2.dilate(ink.astype(np.uint8), kernel, 1).astype(bool)
+                ink = cv2.dilate(
+                    ink.astype(np.uint8),
+                    kernel,
+                    1,
+                ).astype(bool)
                 continue
 
-            eroded = cv2.erode(ink.astype(np.uint8), kernel, 1)
+            eroded = cv2.erode(
+                ink.astype(np.uint8),
+                kernel,
+                1,
+            )
 
             if not np.any(eroded):
                 break
@@ -108,56 +126,141 @@ class PredictionPipeline:
 
     @staticmethod
     def prepare_character(character):
-        return prepare_symbol_image(
-            PredictionPipeline.normalize_stroke_thickness(character)
-        )
+        character = PredictionPipeline.normalize_stroke_thickness(character)
+        return prepare_symbol_image(character)
 
     # Character prediction
 
     @staticmethod
     def predict(model, character, device):
-        character = PredictionPipeline.prepare_character(character)
-        tensor = character.unsqueeze(0).to(device)
+        tensor = PredictionPipeline.prepare_character(character)
+        tensor = tensor.unsqueeze(0).to(device)
 
         with torch.inference_mode():
-            probabilities = torch.softmax(model(tensor), dim=1)
+            probabilities = torch.softmax(
+                model(tensor),
+                dim=1,
+            )
 
         confidence, prediction = probabilities.max(dim=1)
         return prediction.item(), confidence.item()
 
     @staticmethod
     def predict_topk(model, character, device, k=10):
-        tensor = PredictionPipeline.prepare_character(character).unsqueeze(0).to(device)
+        tensor = PredictionPipeline.prepare_character(character)
+        tensor = tensor.unsqueeze(0).to(device)
 
         with torch.inference_mode():
-            probabilities = torch.softmax(model(tensor), dim=1)
+            probabilities = torch.softmax(
+                model(tensor),
+                dim=1,
+            )
 
         k = min(k, probabilities.shape[1])
-        confidence, prediction = torch.topk(probabilities, k, dim=1)
+        confidence, prediction = torch.topk(
+            probabilities,
+            k,
+            dim=1,
+        )
 
-        return [(p.item(), c.item()) for p, c in zip(prediction[0], confidence[0])]
+        return [
+            (p.item(), c.item())
+            for p, c in zip(
+                prediction[0],
+                confidence[0],
+            )
+        ]
 
     def predict_character(self, model, character, device):
-        prediction, confidence = self.predict(model, character, device)
+        prediction, confidence = self.predict(
+            model,
+            character,
+            device,
+        )
+
         return self.characters[prediction], confidence
 
     def predict_character_candidates(self, model, character, device, k=10):
-        return [(self.characters[p], c) for p, c in self.predict_topk(model, character, device, k)]
+        return [
+            (self.characters[p], c)
+            for p, c in self.predict_topk(
+                model,
+                character,
+                device,
+                k,
+            )
+        ]
 
-    # CNN word prediction
+    def _character_probabilities(self, model, word, device, k):
+        tensors = [
+            self.prepare_character(character)
+            for character in word
+        ]
+
+        if not tensors:
+            return []
+
+        batch = torch.stack(tensors).to(device)
+
+        with torch.inference_mode():
+            probabilities = torch.softmax(
+                model(batch),
+                dim=1,
+            )
+
+        k = min(k, probabilities.shape[1])
+        values, indices = torch.topk(
+            probabilities,
+            k,
+            dim=1,
+        )
+
+        result = []
+
+        for row_values, row_indices in zip(values, indices):
+            result.append(
+                {
+                    self.characters[index.item()]: float(value.item())
+                    for index, value in zip(
+                        row_indices,
+                        row_values,
+                    )
+                }
+            )
+
+        return result
+
+    # CNN decoding
 
     def predict_word_cnn(self, model, word, device, character_top_k=10, beam_width=100):
+        probabilities = self._character_probabilities(
+            model,
+            word,
+            device,
+            character_top_k,
+        )
+
         beams = [("", 0.0)]
 
-        for character in word:
-            candidates = self.predict_character_candidates(model, character, device, character_top_k)
+        for candidates in probabilities:
             next_beams = []
 
             for text, score in beams:
-                for prediction, probability in candidates:
-                    next_beams.append((text + prediction, score + np.log(max(probability, 1e-8))))
+                for character, probability in candidates.items():
+                    next_beams.append(
+                        (
+                            text + character,
+                            score + np.log(
+                                max(probability, 1e-8)
+                            ),
+                        )
+                    )
 
-            next_beams.sort(key=lambda x: x[1], reverse=True)
+            next_beams.sort(
+                key=lambda x: x[1],
+                reverse=True,
+            )
+
             beams = next_beams[:beam_width]
 
         return beams
@@ -166,12 +269,25 @@ class PredictionPipeline:
 
     @staticmethod
     def normalize_word(word):
-        return "".join(c for c in word.lower() if c.isalpha())
+        return "".join(
+            c for c in word.lower()
+            if c.isalpha()
+        )
 
     @staticmethod
     def wordfreq_score(word):
         word = PredictionPipeline.normalize_word(word)
-        return float(zipf_frequency(word, "en", wordlist="best")) if word else 0.0
+
+        if not word:
+            return 0.0
+
+        return float(
+            zipf_frequency(
+                word,
+                "en",
+                wordlist="best",
+            )
+        )
 
     def _load_vocabulary(self, vocabulary_size=50000):
         if self._vocabulary is not None:
@@ -179,51 +295,202 @@ class PredictionPipeline:
 
         self._vocabulary = {
             word.lower()
-            for word in top_n_list("en", vocabulary_size, wordlist="best")
+            for word in top_n_list(
+                "en",
+                vocabulary_size,
+                wordlist="best",
+            )
             if word.isalpha()
         }
 
         self._vocabulary_by_length = {}
 
         for word in self._vocabulary:
-            self._vocabulary_by_length.setdefault(len(word), []).append(word)
+            self._vocabulary_by_length.setdefault(
+                len(word),
+                [],
+            ).append(word)
 
     def score_word_against_cnn(self, word, character_candidates):
         score = 0.0
 
-        for character, candidates in zip(word, character_candidates):
-            probabilities = dict(candidates)
-            score += np.log(max(probabilities.get(character, 1e-8), 1e-8))
+        for character, candidates in zip(
+            word,
+            character_candidates,
+        ):
+            probability = candidates.get(
+                character,
+                1e-8,
+            )
+            score += np.log(
+                max(probability, 1e-8)
+            )
 
         return float(score)
-
-    def predict_word_wordfreq(self, model, word, device, character_top_k=10, vocabulary_size=50000, frequency_weight=0.1, limit=20):
-        self._load_vocabulary(vocabulary_size)
-
-        character_candidates = [
-            self.predict_character_candidates(model, character, device, character_top_k)
-            for character in word
-        ]
-
-        candidates = []
-
-        for vocabulary_word in self._vocabulary_by_length.get(len(word), []):
-            cnn_score = self.score_word_against_cnn(vocabulary_word, character_candidates)
-            frequency = self.wordfreq_score(vocabulary_word)
-            candidates.append((vocabulary_word, cnn_score + frequency * frequency_weight))
-
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        return candidates[:limit]
 
     # Language model
 
     def lm_score(self, word):
         word = self.normalize_word(word)
-        return self.language_model.score(word) if word else -20.0
+        return (
+            self.language_model.score(word)
+            if word
+            else -20.0
+        )
 
-    # Combined scoring
+    # Decoder
 
-    def combined_score(self, word, cnn_score=0.0, frequency_weight=0.1, lm_weight=0.1):
+    def predict_word_lm(self, model, word, device, character_top_k=10, beam_width=100, lm_weight=0.15, limit=20):
+        probabilities = self._character_probabilities(
+            model,
+            word,
+            device,
+            character_top_k,
+        )
+
+        beams = [("", 0.0)]
+
+        for candidates in probabilities:
+            next_beams = []
+
+            for text, score in beams:
+                for character, probability in candidates.items():
+                    cnn_score = np.log(
+                        max(probability, 1e-8)
+                    )
+
+                    lm_score = self.language_model.next_log_probability(
+                        text,
+                        character,
+                    )
+
+                    next_beams.append(
+                        (
+                            text + character,
+                            score
+                            + cnn_score
+                            + lm_weight * lm_score,
+                        )
+                    )
+
+            next_beams.sort(
+                key=lambda x: x[1],
+                reverse=True,
+            )
+
+            beams = next_beams[:beam_width]
+
+        return beams[:limit]
+
+    def predict_word_wordfreq(self, model, word, device, character_top_k=10, vocabulary_size=50000, frequency_weight=0.1, limit=20):
+        self._load_vocabulary(vocabulary_size)
+
+        probabilities = self._character_probabilities(
+            model,
+            word,
+            device,
+            character_top_k,
+        )
+
+        candidates = []
+
+        for vocabulary_word in self._vocabulary_by_length.get(
+            len(word),
+            [],
+        ):
+            cnn_score = self.score_word_against_cnn(
+                vocabulary_word,
+                probabilities,
+            )
+
+            frequency = self.wordfreq_score(
+                vocabulary_word
+            )
+
+            candidates.append(
+                (
+                    vocabulary_word,
+                    cnn_score
+                    + frequency * frequency_weight,
+                )
+            )
+
+        candidates.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        return candidates[:limit]
+
+    def predict_word_hybrid(self, model, word, device, character_top_k=10, beam_width=100, frequency_weight=0.1, lm_weight=0.15, limit=20):
+        candidates = self.predict_word_lm(
+            model,
+            word,
+            device,
+            character_top_k,
+            beam_width,
+            lm_weight,
+            beam_width,
+        )
+
+        return self.rerank_word_candidates(
+            candidates,
+            frequency_weight=frequency_weight,
+            lm_weight=0.0,
+        )[:limit]
+
+    def predict_word_wordfreq_hybrid(self, model, word, device, character_top_k=10, vocabulary_size=50000, frequency_weight=0.1, lm_weight=0.15, limit=20):
+        self._load_vocabulary(vocabulary_size)
+
+        probabilities = self._character_probabilities(
+            model,
+            word,
+            device,
+            character_top_k,
+        )
+
+        candidates = []
+
+        for vocabulary_word in self._vocabulary_by_length.get(
+            len(word),
+            [],
+        ):
+            cnn_score = self.score_word_against_cnn(
+                vocabulary_word,
+                probabilities,
+            )
+
+            lm_score = self.lm_score(
+                vocabulary_word
+            )
+
+            frequency = self.wordfreq_score(
+                vocabulary_word
+            )
+
+            score = (
+                cnn_score
+                + lm_weight * lm_score
+                + frequency_weight * frequency
+            )
+
+            candidates.append(
+                (
+                    vocabulary_word,
+                    float(score),
+                )
+            )
+
+        candidates.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        return candidates[:limit]
+
+    # Scoring
+
+    def combined_score(self, word, cnn_score=0.0, frequency_weight=0.1, lm_weight=0.15):
         word = self.normalize_word(word)
 
         return float(
@@ -232,25 +499,40 @@ class PredictionPipeline:
             + lm_weight * self.lm_score(word)
         )
 
-    def rerank_word_candidates(self, candidates, frequency_weight=0.1, lm_weight=0.1):
+    def rerank_word_candidates(self, candidates, frequency_weight=0.1, lm_weight=0.15):
         reranked = [
             (
                 word,
-                self.combined_score(word, cnn_score, frequency_weight, lm_weight),
+                self.combined_score(
+                    word,
+                    score,
+                    frequency_weight,
+                    lm_weight,
+                ),
             )
-            for word, cnn_score in candidates
+            for word, score in candidates
         ]
 
-        reranked.sort(key=lambda x: x[1], reverse=True)
+        reranked.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
         return reranked
 
-    # Word prediction
+    # Public word prediction
 
     def predict_word(self, model, word, device, method="hybrid", character_top_k=10, beam_width=100,
-                     vocabulary_size=50000, frequency_weight=0.1, lm_weight=0.1, limit=20):
+                     vocabulary_size=50000, frequency_weight=0.1, lm_weight=0.15, limit=20):
 
         if method == "cnn":
-            return self.predict_word_cnn(model, word, device, character_top_k, beam_width)[:limit]
+            return self.predict_word_cnn(
+                model,
+                word,
+                device,
+                character_top_k,
+                beam_width,
+            )[:limit]
 
         if method == "wordfreq":
             return self.predict_word_wordfreq(
@@ -264,38 +546,51 @@ class PredictionPipeline:
             )
 
         if method == "hybrid":
-            candidates = self.predict_word_cnn(
+            return self.predict_word_hybrid(
                 model,
                 word,
                 device,
                 character_top_k,
                 beam_width,
-            )
-            return self.rerank_word_candidates(
-                candidates,
                 frequency_weight,
                 lm_weight,
-            )[:limit]
+                limit,
+            )
 
         if method == "wordfreq_hybrid":
-            candidates = self.predict_word_wordfreq(
+            return self.predict_word_wordfreq_hybrid(
                 model,
                 word,
                 device,
                 character_top_k,
                 vocabulary_size,
-                0.0,
-                beam_width,
-            )
-            return self.rerank_word_candidates(
-                candidates,
                 frequency_weight,
                 lm_weight,
-            )[:limit]
+                limit,
+            )
 
         raise ValueError(
             f"Unknown prediction method: {method}"
         )
+
+    # Compatibility
+
+    def predict_word_candidates(self, model, word, device, k=20, beam_width=100):
+        return self.predict_word(
+            model,
+            word,
+            device,
+            method="cnn",
+            character_top_k=k,
+            beam_width=beam_width,
+            limit=k,
+        )
+
+    def word_frequency_score(self, word):
+        return self.wordfreq_score(word)
+
+    def language_score(self, word):
+        return self.lm_score(word)
 
     # Segmented text
 
@@ -310,10 +605,15 @@ class PredictionPipeline:
                     model,
                     word,
                     device,
-                    method,
+                    method=method,
                     **kwargs,
                 )
-                line_result.append(candidates[0][0] if candidates else "")
+
+                line_result.append(
+                    candidates[0][0]
+                    if candidates
+                    else ""
+                )
 
             result.append(line_result)
 
