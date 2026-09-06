@@ -34,24 +34,29 @@ class RecognitionResult:
 
 
 class WorkerSignals(QObject):
-    finished = Signal(object)
-    error = Signal(str)
+    finished = Signal(object, object, object, object, bool)
+    error = Signal(str, object, object, object, bool)
 
 
 class RecognitionWorker(QRunnable):
-    def __init__(self, recognizer, image):
+    def __init__(self, recognizer, image, dialog=None, canvas=None, info=None, automatic=False):
         super().__init__()
         self.setAutoDelete(True)
         self.recognizer = recognizer
         self.image = image
+        self.dialog = dialog
+        self.canvas = canvas
+        self.info = info
+        self.automatic = automatic
         self.signals = WorkerSignals()
 
     @Slot()
     def run(self):
         try:
-            self.signals.finished.emit(self.recognizer.recognize(self.image))
+            result = self.recognizer.recognize(self.image)
+            self.signals.finished.emit(result, self.dialog, self.canvas, self.info, self.automatic)
         except Exception as exc:
-            self.signals.error.emit(f'{type(exc).__name__}: {exc}')
+            self.signals.error.emit(f'{type(exc).__name__}: {exc}', self.dialog, self.canvas, self.info, self.automatic)
 
 
 class HandwritingRecognizer:

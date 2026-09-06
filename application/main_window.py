@@ -6,11 +6,11 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QThreadPool, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QTextCursor
+from PySide6.QtGui import QAction, QCursor, QKeyEvent, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
+    QApplication, QCheckBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QDialog,
     QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QSizePolicy,
-    QStatusBar, QTabBar, QTextBrowser, QTextEdit, QToolBar, QVBoxLayout, QWidget,
+    QDockWidget, QStatusBar, QTabBar, QTextBrowser, QTextEdit, QToolBar, QVBoxLayout, QWidget,
 )
 
 from .calculator import Calculator
@@ -44,7 +44,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_NAME); self.resize(1540, 940); self.setMinimumSize(1180, 700); self.setStyleSheet(STYLESHEET)
         self.store = NoteStore('notes'); self.writing = HandwritingRecognizer(); self.math = MathRecognizer(); self.thread_pool = QThreadPool.globalInstance(); self.thread_pool.setMaxThreadCount(1)
         self.current_note = None; self.dirty = False; self.mode = 'Writing'; self.math_expression = ''; self.editing = False; self._tab_sync = False
-        self._recognition_running = False; self._recognition_pending = False; self.handwriting_window = None
+        self._recognition_running = False; self._recognition_pending = False; self.handwriting_window = None; self.handwriting_canvas = None; self.handwriting_info = None; self.handwriting_expression = None
         self._build_actions(); self._build_ui(); self._load_notes(); self._new_note_if_empty(); self._start_autosave()
 
     def _build_actions(self):
@@ -187,7 +187,7 @@ class MainWindow(QMainWindow):
     def _toggle_mode(self): self.set_mode('Math' if self.mode == 'Writing' else 'Writing')
 
     def set_mode(self, mode):
-        self.mode = mode; self.mode_button.setText(mode); self.mode_hint.setText('Math mode: write one symbol at a time → build an expression → result' if mode == 'Math' else 'Writing mode: words, sentences and notes'); self.math_result.setText('Math CNN: ready' if self.math.ready else f'Math CNN unavailable: {self.math.error or "unknown error"}' if mode == 'Math' else 'Math results will appear here.'); self.model_label.setText(self._model_status())
+        self.mode = mode; self.mode_button.setText(mode); self.mode_hint.setText('Math mode: write one symbol at a time → build an expression → result' if mode == 'Math' else 'Writing mode: words, sentences and notes'); self.math_result.setText('Math CNN: ready' if self.math.ready else f'Math CNN unavailable: {self.math.error or "unknown error"}' if mode == 'Math' else 'Math results will appear here.'); self.model_label.setText(self._model_status()); self._resize_handwriting_dock()
 
     def _model_status(self): return ('Math CNN ready' if self.math.ready else 'Math CNN unavailable') if self.mode == 'Math' else ('Writing CNN ready' if self.writing.ready else 'Writing CNN unavailable')
 
@@ -224,39 +224,71 @@ class MainWindow(QMainWindow):
             self.status_label.setText('Shortcut settings saved')
 
     def show_handwriting(self):
-        if self.handwriting_window is not None and self.handwriting_window.isVisible():
-            self.handwriting_window.raise_(); self.handwriting_window.activateWindow(); return
-        dialog = QWidget(self, Qt.WindowType.Window)
-        dialog.setWindowTitle(f'Handwriting — {self.mode} mode')
-        dialog.resize(1100, 720); dialog.setStyleSheet(STYLESHEET)
-        layout = QVBoxLayout(dialog)
-        header = QHBoxLayout()
-        header.addWidget(QLabel('Writing: pause to convert. Math: one symbol at a time.'))
-        spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred); header.addWidget(spacer)
+        if self.handwriting_window is not None:
+            self._resize_handwriting_window(); self.handwriting_window.show(); self.handwriting_window.raise_(); self.handwriting_window.activateWindow(); return
+        dialog = QDialog(self, Qt.WindowType.Tool | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
+        dialog.setObjectName('handwritingWindow'); dialog.setStyleSheet(STYLESHEET); dialog.setWindowTitle(f'Handwriting — {self.mode} mode'); dialog.setModal(False)
+        panel = QWidget(); layout = QVBoxLayout(panel); layout.setContentsMargins(10, 8, 10, 9); layout.setSpacing(6)
+        header = QHBoxLayout(); header.setSpacing(6); title = QLabel('Pause after writing to convert automatically.'); header.addWidget(title); spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred); header.addWidget(spacer)
         clear = QPushButton('Clear'); recognise = QPushButton('Recognise'); recognise.setObjectName('primary'); inspect = QPushButton('Inspect segments'); insert_ink = QPushButton('Insert ink')
-        header.addWidget(clear); header.addWidget(recognise); header.addWidget(inspect); header.addWidget(insert_ink); layout.addLayout(header)
+        trackpad = QCheckBox('Trackpad draw'); trackpad.setToolTip('Move the trackpad without holding the mouse button. The pointer starts near the canvas top-left.')
+        header.addWidget(trackpad); header.addWidget(clear); header.addWidget(recognise); header.addWidget(inspect); header.addWidget(insert_ink); layout.addLayout(header)
         expression_label = None
         if self.mode == 'Math':
             expression_label = QLabel('Expression:  —  • draw one symbol, then pause'); expression_label.setObjectName('mathStream'); layout.addWidget(expression_label)
-        canvas = InkCanvas(pen_width=3 if self.mode == 'Writing' else 4); layout.addWidget(canvas, 1)
-        info = QLabel(''); info.setObjectName('status'); layout.addWidget(info)
+            canvas = InkCanvas(pen_width=4, min_size=(190, 190), logical_size=(520, 520)); canvas.setFixedSize(190, 190)
+            canvas_wrap = QHBoxLayout(); canvas_wrap.setContentsMargins(0, 0, 0, 0); canvas_wrap.addStretch(); canvas_wrap.addWidget(canvas); canvas_wrap.addStretch(); layout.addLayout(canvas_wrap)
+            info = QLabel('Draw one symbol in the square.'); info.setObjectName('status'); layout.addWidget(info)
+            self.math_expression = ''
+        else:
+            canvas = InkCanvas(pen_width=3, min_size=(560, 180), logical_size=(1400, 520)); canvas.setFixedSize(760, 170)
+            layout.addWidget(canvas, 0, Qt.AlignmentFlag.AlignCenter)
+            info = QLabel(''); info.setObjectName('status'); layout.addWidget(info)
         clear.clicked.connect(canvas.clear)
+        trackpad.toggled.connect(lambda enabled: self._set_trackpad_mode(canvas, enabled))
         recognise.clicked.connect(lambda: self._recognise_canvas(dialog, canvas, info, False, expression_label))
         inspect.clicked.connect(lambda: self._inspect_segmentation(dialog, canvas, info))
         insert_ink.clicked.connect(lambda: self._insert_ink(dialog, canvas))
         if self.mode == 'Writing':
-            timer = QTimer(dialog); timer.setSingleShot(True); timer.setInterval(850)
-            timer.timeout.connect(lambda: self._recognise_canvas(dialog, canvas, info, True, None))
-            canvas.changed.connect(timer.start)
-            self._writing_auto_timer = timer
+            timer = QTimer(dialog); timer.setSingleShot(True); timer.setInterval(1100); timer.timeout.connect(lambda: self._recognise_canvas(dialog, canvas, info, True, None)); canvas.changed.connect(timer.start); self._writing_auto_timer = timer
         else:
-            self.math_expression = ''
-            timer = QTimer(dialog); timer.setSingleShot(True); timer.setInterval(1100)
-            timer.timeout.connect(lambda: self._recognise_canvas(dialog, canvas, info, True, expression_label))
-            canvas.changed.connect(timer.start)
-            self._math_auto_timer = timer
-        self.handwriting_window = dialog
-        dialog.show()
+            timer = QTimer(dialog); timer.setSingleShot(True); timer.setInterval(1200); timer.timeout.connect(lambda: self._recognise_canvas(dialog, canvas, info, True, expression_label)); canvas.changed.connect(timer.start); self._math_auto_timer = timer
+        dialog.finished.connect(lambda _result: self._handwriting_closed())
+        dialog.setLayout(layout); self.handwriting_window = dialog; self.handwriting_canvas = canvas; self.handwriting_info = info; self.handwriting_expression = expression_label; self._resize_handwriting_window(); dialog.show(); self._position_handwriting_window(); dialog.raise_(); dialog.activateWindow()
+
+    def _position_handwriting_window(self):
+        if self.handwriting_window is None:
+            return
+        screen = self.handwriting_window.screen() or self.screen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        margin = 24
+        x = area.right() - self.handwriting_window.width() - margin
+        y = area.bottom() - self.handwriting_window.height() - margin
+        self.handwriting_window.move(max(area.left() + margin, x), max(area.top() + margin, y))
+
+    def _set_trackpad_mode(self, canvas, enabled):
+        canvas.set_trackpad_mode(enabled)
+        if not enabled:
+            return
+        canvas.reset_trackpad_pointer()
+
+    def _resize_handwriting_window(self):
+        if self.handwriting_window is None: return
+        self.handwriting_window.setWindowTitle(f'Handwriting — {self.mode} mode')
+        if self.mode == 'Math': self.handwriting_window.resize(330, 320)
+        else: self.handwriting_window.resize(820, 260)
+
+    def _handwriting_closed(self):
+        self._recognition_pending = False
+        self.handwriting_window = None
+        self.handwriting_canvas = None
+        self.handwriting_info = None
+        self.handwriting_expression = None
+        for timer_name in ('_writing_auto_timer', '_math_auto_timer'):
+            timer = getattr(self, timer_name, None)
+            if timer is not None: timer.stop()
 
     def _inspect_segmentation(self, dialog, canvas, info):
         if not canvas.has_ink():
@@ -306,7 +338,9 @@ class MainWindow(QMainWindow):
                 info.setText(f'Top prediction: {candidates[0][0]} ({candidates[0][1]:.0%})')
                 self.math_result.setText(f'Expression: {self.math_expression}\nResult: {answer or "—"}')
                 canvas.clear()
+                self._reset_trackpad_after_recognition(canvas)
             except Exception as exc:
+                self._reset_trackpad_after_recognition(canvas)
                 info.setText(f'Math recognition error: {exc}')
                 if not automatic: QMessageBox.critical(dialog, 'Math recognition error', str(exc))
             return
@@ -317,27 +351,39 @@ class MainWindow(QMainWindow):
         info.setText('Segmenting and recognising…')
         self._recognition_running = True
         self._recognition_pending = False
-        worker = RecognitionWorker(self.writing, image)
-        worker.signals.finished.connect(lambda result: self._writing_done(dialog, canvas, result, info, automatic))
-        worker.signals.error.connect(lambda error: self._writing_error(dialog, error, info, automatic))
+        worker = RecognitionWorker(self.writing, image, dialog, canvas, info, automatic)
+        worker.signals.finished.connect(self._writing_done)
+        worker.signals.error.connect(self._writing_error)
         self.thread_pool.start(worker)
 
-    def _writing_done(self, dialog, canvas, result, info, automatic):
+    def _writing_done(self, result, dialog, canvas, info, automatic):
         self._recognition_running = False
+        if dialog is None or not dialog.isVisible():
+            self._recognition_pending = False
+            return
         info.setText(f'{result.text or "[no text]"}   ·   raw: {result.raw_text or "[no text]"}   ·   {result.lines} lines · {result.words} words · {result.characters} chars   ·   segmentation {result.segmentation_ms:.0f} ms   ·   total {result.elapsed_ms:.0f} ms')
         if result.text: self._insert_text_at_cursor(result.text); self.status_label.setText('Handwriting converted and inserted')
         canvas.clear()
+        self._reset_trackpad_after_recognition(canvas)
         if self._recognition_pending:
             self._recognition_pending = False
-            QTimer.singleShot(80, lambda: self._recognise_canvas(dialog, canvas, info, True, None))
+            if dialog is not None and dialog.isVisible(): QTimer.singleShot(80, lambda: self._recognise_canvas(dialog, canvas, info, True, None))
         elif not automatic:
             dialog.close()
 
-    def _writing_error(self, dialog, error, info, automatic):
+    def _writing_error(self, error, dialog, canvas, info, automatic):
         self._recognition_running = False
-        info.setText(f'Recognition error: {error}')
+        if dialog is None or not dialog.isVisible():
+            self._recognition_pending = False
+            return
+        self._reset_trackpad_after_recognition(canvas)
+        if info is not None: info.setText(f'Recognition error: {error}')
         if not automatic: QMessageBox.critical(dialog, 'Recognition error', error)
         self._recognition_pending = False
+
+    def _reset_trackpad_after_recognition(self, canvas):
+        if canvas is not None and canvas.trackpad_mode:
+            canvas.reset_trackpad_pointer()
 
     def _insert_text_at_cursor(self, text):
         self.enter_edit_mode(); cursor = self.editor.textCursor(); existing = self.editor.toPlainText(); prefix = '' if not existing or existing.endswith(('\n', ' ')) else '\n'; cursor.insertText(prefix + text); self.editor.setTextCursor(cursor); self.dirty = True
