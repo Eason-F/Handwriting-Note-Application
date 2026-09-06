@@ -26,8 +26,10 @@ if RESULTS_DIR.exists():
 
 RESULTS_DIR.mkdir()
 
+
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(f"Device: {device}")
+
 
 checkpoint = torch.load(
     CHECKPOINT_PATH,
@@ -35,10 +37,12 @@ checkpoint = torch.load(
     weights_only=True,
 )
 
+
 model = WritingCNN(checkpoint["number_of_classes"])
 model.load_state_dict(checkpoint["model_state"])
 model.to(device)
 model.eval()
+
 
 line_segmenter = LineSegmenter(
     min_ink_pixels=8,
@@ -46,16 +50,20 @@ line_segmenter = LineSegmenter(
     min_line_height=10,
 )
 
+
 word_segmenter = WordSegmenter(
     word_gap_threshold=8,
 )
 
+
 character_segmenter = CharacterSegmenter()
+
 
 conjoined_segmenter = ConjoinedCharacterSegmenter(
     width_multiplier=1.8,
     min_character_width=5,
 )
+
 
 segmentation_pipeline = SegmentationPipeline(
     line_segmenter,
@@ -64,17 +72,21 @@ segmentation_pipeline = SegmentationPipeline(
     conjoined_segmenter,
 )
 
+
 prediction_pipeline = PredictionPipeline(
     list(EMNIST_BYCLASS_CHARACTERS)
 )
 
+
 image = Image.open(IMAGE_PATH).convert("L")
+
 
 segmented = segmentation_pipeline.segment(
     image,
     model,
     device,
 )
+
 
 for line_index, line in enumerate(segmented):
     line_dir = RESULTS_DIR / f"line_{line_index}"
@@ -93,24 +105,95 @@ for line_index, line in enumerate(segmented):
                 word_dir / f"character_{character_index}.png"
             )
 
+
+print("\n" + "=" * 60)
+print("CNN TOP-5 PREDICTIONS")
+print("=" * 60)
+
+
+for line_index, line in enumerate(segmented):
+    print(f"\nLine {line_index}:")
+
+    for word_index, word in enumerate(line):
+        print(f"\n  Word {word_index}: {len(word)} characters")
+
+        for character_index, character in enumerate(word):
+            candidates = prediction_pipeline.predict_character_candidates(
+                model,
+                character,
+                device,
+                k=5,
+            )
+
+            print(f"\n    Character {character_index}:")
+
+            for rank, (prediction, confidence) in enumerate(
+                candidates,
+                start=1,
+            ):
+                print(
+                    f"      {rank}. "
+                    f"{prediction:<3} "
+                    f"{confidence * 100:6.2f}%"
+                )
+
+
+print("\n" + "=" * 60)
+print("WORD CANDIDATES")
+print("=" * 60)
+
+
+for line_index, line in enumerate(segmented):
+    print(f"\nLine {line_index}:")
+
+    for word_index, word in enumerate(line):
+        candidates = prediction_pipeline.predict_word_candidates(
+            model,
+            word,
+            device,
+            k=5,
+            beam_width=10,
+        )
+
+        print(f"\n  Word {word_index}:")
+
+        for rank, (text, score) in enumerate(
+            candidates,
+            start=1,
+        ):
+            print(
+                f"    {rank}. "
+                f"{text:<20} "
+                f"score={score:.4f}"
+            )
+
+
 predictions = prediction_pipeline.predict(
     segmented,
     model,
     device,
 )
 
+
 parsed_lines = []
 
-print("\nPredictions:")
+
+print("\n" + "=" * 60)
+print("TOP-1 PREDICTIONS")
+print("=" * 60)
+
 
 for line_index, line in enumerate(predictions):
     parsed_line = " ".join(line)
     parsed_lines.append(parsed_line)
 
-    print(f"  Line {line_index}: {parsed_line}")
+    print(
+        f"  Line {line_index}: {parsed_line}"
+    )
+
 
 parsed_text = "\n".join(parsed_lines)
 
+
 print("\nParsed output:")
 print(parsed_text)
-
