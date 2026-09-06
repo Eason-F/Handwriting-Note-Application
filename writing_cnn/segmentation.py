@@ -48,28 +48,64 @@ class LineSegmenter:
 
 
 class WordSegmenter:
-    def __init__(self, word_gap_threshold=8):
+    def __init__(self, word_gap_threshold=8, gap_multiplier=2.0, min_gap_threshold=3):
         self.word_gap_threshold = word_gap_threshold
+        self.gap_multiplier = gap_multiplier
+        self.min_gap_threshold = min_gap_threshold
 
     def find_regions(self, line):
         projection = np.sum(line, axis=0)
         active = projection > 0
-        regions, start, gap_start = [], None, None
+
+        gaps = []
+        gap_start = None
+
+        for x, has_ink in enumerate(active):
+            if not has_ink:
+                if gap_start is None:
+                    gap_start = x
+            elif gap_start is not None:
+                gaps.append((gap_start, x - gap_start))
+                gap_start = None
+
+        if gap_start is not None:
+            gaps.append((gap_start, len(active) - gap_start))
+
+        gap_lengths = [length for _, length in gaps if length > 0]
+
+        adaptive_threshold = self.word_gap_threshold
+
+        if len(gap_lengths) >= 3:
+            typical_gap = float(np.median(gap_lengths))
+            adaptive_threshold = max(
+                self.min_gap_threshold,
+                round(typical_gap * self.gap_multiplier),
+            )
+
+        regions = []
+        start = None
+        gap_start = None
 
         for x, has_ink in enumerate(active):
             if has_ink:
                 if start is None:
                     start = x
-                gap_start = None
-            elif start is not None:
-                if gap_start is None:
-                    gap_start = x
-                if x - gap_start > self.word_gap_threshold:
-                    regions.append((start, gap_start))
-                    start, gap_start = None, None
+
+                if gap_start is not None:
+                    gap_length = x - gap_start
+
+                    if gap_length > adaptive_threshold:
+                        regions.append((start, gap_start))
+                        start = x
+
+                    gap_start = None
+
+            elif start is not None and gap_start is None:
+                gap_start = x
 
         if start is not None:
-            regions.append((start, len(active)))
+            end = gap_start if gap_start is not None and len(active) - gap_start > adaptive_threshold else len(active)
+            regions.append((start, end))
 
         return regions
 

@@ -29,16 +29,36 @@ class PredictionPipeline:
 
         return result
     
-    def dilate_character(self, image: Image.Image) -> Image.Image:
-        image_array = np.asarray(image).copy()
-        image_array = np.where(image_array < 170, 255, 0).astype(np.uint8)
-        kernel = np.ones((3, 3), dtype=np.uint8)
-        dilated = cv2.dilate(image_array, kernel, iterations=1)
-        return Image.fromarray(255 - dilated)
+    def normalize_stroke_thickness(self, image: Image.Image) -> Image.Image:
+        image_array = np.asarray(image.convert("L"))
+        ink = image_array < 128
+
+        if not np.any(ink):
+            return image
+
+        ys, xs = np.where(ink)
+        x1, x2 = xs.min(), xs.max() + 1
+        y1, y2 = ys.min(), ys.max() + 1
+
+        character = ink[y1:y2, x1:x2]
+        ink_ratio = character.mean()
+
+        print(ink_ratio)
+        if ink_ratio < 0.2:
+            kernel = np.ones((3, 3), dtype=np.uint8)
+            character = cv2.dilate(character.astype(np.uint8), kernel, iterations=1).astype(bool)
+        elif ink_ratio > 0.48:
+            kernel = np.ones((3, 3), dtype=np.uint8)
+            character = cv2.erode(character.astype(np.uint8), kernel, iterations=1).astype(bool)
+
+        output = np.full_like(image_array, 255)
+        output[y1:y2, x1:x2][character] = 0
+
+        return Image.fromarray(output)
 
     def predict_character(self, model: torch.nn.Module, character: Image.Image, device: torch.device) -> tuple[int, float]:
-        character = self.dilate_character(character)
-        # character.show()
+        character = self.normalize_stroke_thickness(character)
+        character.show()
         tensor = prepare_symbol_image(character).unsqueeze(0).to(device)
         with torch.inference_mode():
             output = model(tensor)

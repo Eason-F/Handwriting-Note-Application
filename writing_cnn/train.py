@@ -154,43 +154,56 @@ def main():
 
     print("Loading EMNIST ByClass through TFDS (first run downloads it)...")
 
-    emnist_train = EMNISTDataset(
+    train_data = EMNISTDataset(
+        load_emnist_source(args.tfds_data, "train"),
+        augment=True,
+    )
+    
+    train_eval_data = EMNISTDataset(
         load_emnist_source(args.tfds_data, "train"),
         augment=False,
     )
 
-    emnist_test = EMNISTDataset(
+    test_data = EMNISTDataset(
         load_emnist_source(args.tfds_data, "test"),
         augment=False,
     )
 
     sample_weights = torch.full(
-        (len(emnist_train),),
-        0.5 / len(emnist_train),
+        (len(train_data),),
+        0.5 / len(train_data),
     )
 
     sampler = WeightedRandomSampler(
         sample_weights,
-        num_samples=2 * len(emnist_train),
+        num_samples=2 * len(train_data),
         replacement=True,
     )
 
-    emnist_train_loader = DataLoader(
-        emnist_train,
+    train_loader = DataLoader(
+        train_data,
         batch_size=args.batch_size,
         sampler=sampler,
         num_workers=args.workers,
     )
+    
+    train_eval_loader = DataLoader(
+        train_eval_data,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        num_workers=args.workers,
+    )
+    
 
-    emnist_test_loader = DataLoader(
-        emnist_test,
+    test_loader = DataLoader(
+        test_data,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
     )
 
     all_labels = np.array(
-        [int(label) for image, label in emnist_train],
+        [int(label) for image, label in train_data],
         dtype=np.int64,
     )
 
@@ -235,8 +248,8 @@ def main():
 
     print(f"Device: {device}")
     print(f"Classes: {len(symbols)}")
-    print(f"EMNIST training samples: {len(emnist_train):,}")
-    print(f"EMNIST test samples: {len(emnist_test):,}")
+    print(f"EMNIST training samples: {len(train_data):,}")
+    print(f"EMNIST test samples: {len(test_data):,}")
     print(f"Samples drawn per epoch: {len(sampler):,}")
     print(f"Initial learning rate: {args.learning_rate}")
 
@@ -250,7 +263,7 @@ def main():
         train_correct = 0
         train_samples = 0
 
-        for batch_number, (images, targets) in enumerate(emnist_train_loader, start=1):
+        for batch_number, (images, targets) in enumerate(train_loader, start=1):
             images = images.to(device)
             targets = targets.to(device)
 
@@ -270,7 +283,7 @@ def main():
             if batch_number % 100 == 0:
                 print(
                     f"  epoch {epoch}: "
-                    f"batch {batch_number}/{len(emnist_train_loader)} "
+                    f"batch {batch_number}/{len(train_loader)} "
                     f"loss={running_loss / train_samples:.4f}",
                     flush=True,
                 )
@@ -280,10 +293,19 @@ def main():
         
         test_loss, test_accuracy, confusion_matrix = evaluate(
             model,
-            emnist_test_loader,
+            test_loader,
             loss_function,
             device,
         )
+        
+        train_clean_accuracy = 0.0
+        if epoch % 5 == 0:
+            _, train_clean_accuracy, _ = evaluate(
+                model,
+                train_eval_loader,
+                loss_function,
+                device,
+            )
 
         scheduler.step(test_accuracy)
         current_lr = optimizer.param_groups[0]["lr"]
@@ -293,7 +315,8 @@ def main():
             f"\nEpoch {epoch:02d}/{args.epochs}: "
             f"train_loss={train_loss:.4f} "
             f"test_loss={test_loss:.4f} "
-            f"train_accuracy={train_accuracy:.2%} "
+            f"train_accuracy (augmented)={train_accuracy:.2%} "
+            f"train_accuracy (clean)={train_clean_accuracy:.2%} "
             f"test_accuracy={test_accuracy:.2%} "
             f"lr={current_lr:.6g} "
             f"time={seconds:.1f}s"
