@@ -3,7 +3,6 @@ __pycache__/
 *.py[cod]
 .DS_Store
 data/
-checkpoints/
 test_results/
 notes/
 build/
