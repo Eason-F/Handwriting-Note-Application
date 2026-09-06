@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QSizePolicy, QWidget
 class InkCanvas(QWidget):
     changed = Signal()
 
-    def __init__(self, background='white', pen_width=3, min_size=(640, 360), logical_size=None):
+    def __init__(self, background='white', pen_width=5, min_size=(640, 360), logical_size=None):
         super().__init__()
         self.setMinimumSize(*min_size)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)

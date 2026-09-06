@@ -241,7 +241,7 @@ class MainWindow(QMainWindow):
             info = QLabel('Draw one symbol in the square.'); info.setObjectName('status'); layout.addWidget(info)
             self.math_expression = ''
         else:
-            canvas = InkCanvas(pen_width=3, min_size=(560, 180), logical_size=(1400, 520)); canvas.setFixedSize(760, 170)
+            canvas = InkCanvas(pen_width=5, min_size=(560, 180), logical_size=(1400, 520)); canvas.setFixedSize(760, 170)
             layout.addWidget(canvas, 0, Qt.AlignmentFlag.AlignCenter)
             info = QLabel(''); info.setObjectName('status'); layout.addWidget(info)
         clear.clicked.connect(canvas.clear)

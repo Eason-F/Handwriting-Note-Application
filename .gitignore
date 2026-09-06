@@ -6,4 +6,7 @@ data/
 checkpoints/
 test_results/
 notes/
+build/
+dist/
+
 
