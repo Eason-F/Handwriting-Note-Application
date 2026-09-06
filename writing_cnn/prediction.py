@@ -34,48 +34,35 @@ class PredictionPipeline:
         if not np.any(ink):
             return 0.0
 
-        distance = cv2.distanceTransform(
-            ink.astype(np.uint8),
-            cv2.DIST_L2,
-            5,
-        )
+        distance = cv2.distanceTransform(ink.astype(np.uint8), cv2.DIST_L2, 5)
+        values = distance[distance > 0]
 
-        distances = distance[ink > 0]
-
-        if len(distances) == 0:
-            return 0.0
-
-        return float(np.median(distances) * 2.0)
+        return float(np.median(values) * 2)
     
-    def normalize_stroke_thickness(self, image: Image.Image, target_width: float = 2.25, tolerance: float = 0.36) -> Image.Image:
+    def normalize_stroke_thickness(self, image: Image.Image, target_width: float = 3.0, tolerance: float = 0.5) -> Image.Image:
         image_array = np.asarray(image.convert("L"))
         ink = image_array < 128
 
         if not np.any(ink):
             return image
 
-        width = self.estimate_stroke_width(ink)
-        print(f"Stroke width: {width:.2f}px")
+        kernel = np.ones((3, 3), np.uint8)
 
-        kernel = np.ones((3, 3), dtype=np.uint8)
+        for _ in range(3):
+            width = self.estimate_stroke_width(ink)
 
-        for _ in range(2):
-            if target_width - tolerance <= width <= target_width + tolerance:
+            if abs(width - target_width) <= tolerance:
                 break
 
             if width < target_width:
-                ink = cv2.dilate(ink.astype(np.uint8), kernel, iterations=1).astype(bool)
+                ink = cv2.dilate(ink.astype(np.uint8), kernel, 1).astype(bool)
             else:
-                eroded = cv2.erode(ink.astype(np.uint8), kernel, iterations=1).astype(bool)
+                eroded = cv2.erode(ink.astype(np.uint8), kernel, 1)
 
                 if not np.any(eroded):
                     break
 
-                ink = eroded
-
-            width = self.estimate_stroke_width(ink)
-
-        print(f"Stroke width after: {width:.2f}px")
+                ink = eroded.astype(bool)
 
         output = np.full_like(image_array, 255)
         output[ink] = 0
@@ -84,7 +71,6 @@ class PredictionPipeline:
 
     def predict_character(self, model: torch.nn.Module, character: Image.Image, device: torch.device) -> tuple[int, float]:
         character = self.normalize_stroke_thickness(character)
-        character.show()
         tensor = prepare_symbol_image(character).unsqueeze(0).to(device)
         with torch.inference_mode():
             output = model(tensor)

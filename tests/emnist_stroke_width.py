@@ -1,8 +1,8 @@
 from pathlib import Path
 
-import torch
 import numpy as np
 from PIL import Image
+import cv2
 
 from writing_cnn.data import EMNISTDataset, load_emnist_source
 from writing_cnn.prediction import PredictionPipeline
@@ -41,31 +41,28 @@ num_images = min(
     len(dataset),
 )
 
-stroke_sums = []
+widths = []
+
 for index in range(num_images):
-    tensor, label = dataset[index]
+    tensor, _ = dataset[index]
+    image = ((tensor.squeeze() * 127.5) + 127.5).clamp(0, 255).byte().numpy()
+    width = PredictionPipeline.estimate_stroke_width(image < 128)
 
-    image = tensor.squeeze(0).detach().cpu()
+    if width > 0:
+        widths.append(width)
 
-    image = (
-        image.clamp(0, 1) * 255
-    ).to(torch.uint8)
-
-    image = Image.fromarray(
-        image.numpy(),
-        mode="L",
-    )
+print(
+    f"median={np.median(widths):.2f}px "
+    f"mean={np.mean(widths):.2f}px "
+    f"std_dev={np.std(widths):.2f}px"
+)
     
-    image_array = np.asarray(image.convert("L"))
-    ink = image_array < 128
-    
-    stroke_sums.append(PredictionPipeline.estimate_stroke_width(ink))
-    
-array = np.array(stroke_sums)
-ave = np.average(array)
-std_dev = np.std(array)
+for width in range(1, 8):
+    image = np.full((32, 32), 255, np.uint8)
+    cv2.line(image, (4, 4), (27, 27), 0, width)
 
-print(f"Average stroke width {ave}")
-print(f"Deviation of {std_dev}")
+    measured = PredictionPipeline.estimate_stroke_width(image < 128)
+
+    print(f"actual={width}px measured={measured:.2f}px")
 
     
