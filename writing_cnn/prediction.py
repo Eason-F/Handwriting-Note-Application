@@ -1,15 +1,76 @@
+from collections import Counter
+
+import cv2
+import numpy as np
+import torch
 from PIL import Image
 
-import torch
-import numpy as np
-import cv2
-
 from math_cnn.images import prepare_symbol_image
+from wordfreq import top_n_list, zipf_frequency
+
+
+class CharacterLanguageModel:
+    def __init__(self, vocabulary_size=50000, n=4, smoothing=0.1):
+        self.n = n
+        self.smoothing = smoothing
+        self.vocabulary_size = vocabulary_size
+        self.counts = Counter()
+        self.contexts = Counter()
+        self._build()
+
+    def _build(self):
+        for word in top_n_list("en", self.vocabulary_size, wordlist="best"):
+            word = "".join(c for c in word.lower() if c.isalpha())
+
+            if not word:
+                continue
+
+            weight = max(
+                1,
+                int(
+                    10 ** max(
+                        zipf_frequency(word, "en", wordlist="best") - 3,
+                        0,
+                    )
+                ),
+            )
+
+            text = "^" * (self.n - 1) + word + "$"
+
+            for i in range(len(text) - self.n + 1):
+                context = text[i:i + self.n - 1]
+                character = text[i + self.n - 1]
+
+                self.counts[(context, character)] += weight
+                self.contexts[context] += weight
+
+    def score(self, word):
+        word = "".join(c for c in word.lower() if c.isalpha())
+
+        if not word:
+            return -20.0
+
+        text = "^" * (self.n - 1) + word + "$"
+        score = 0.0
+
+        for i in range(len(text) - self.n + 1):
+            context = text[i:i + self.n - 1]
+            character = text[i + self.n - 1]
+
+            numerator = self.counts[(context, character)] + self.smoothing
+            denominator = self.contexts[context] + self.smoothing * 27
+
+            score += np.log(numerator / denominator)
+
+        return score
 
 
 class PredictionPipeline:
     def __init__(self, characters: list[str]):
         self.characters = characters
+        self._vocabulary = None
+        self._vocabulary_by_length = {}
+        self.language_model = CharacterLanguageModel()
 
     def predict(self, segmented: list[list[list[Image.Image]]], model: torch.nn.Module, device: torch.device) -> list[list[str]]:
         result = []
@@ -18,13 +79,17 @@ class PredictionPipeline:
             line_result = []
 
             for word in line:
-                predictions = []
+                text = ""
 
                 for character in word:
-                    prediction, _ = self.predict_character(model, character, device)
-                    predictions.append(self.characters[prediction])
+                    prediction, _ = self.predict_character(
+                        model,
+                        character,
+                        device,
+                    )
+                    text += self.characters[prediction]
 
-                line_result.append("".join(predictions))
+                line_result.append(text)
 
             result.append(line_result)
 
@@ -67,17 +132,18 @@ class PredictionPipeline:
                     kernel,
                     1,
                 ).astype(bool)
-            else:
-                eroded = cv2.erode(
-                    ink.astype(np.uint8),
-                    kernel,
-                    1,
-                )
+                continue
 
-                if not np.any(eroded):
-                    break
+            eroded = cv2.erode(
+                ink.astype(np.uint8),
+                kernel,
+                1,
+            )
 
-                ink = eroded.astype(bool)
+            if not np.any(eroded):
+                break
+
+            ink = eroded.astype(bool)
 
         output = np.full_like(image_array, 255)
         output[ink] = 0
@@ -94,40 +160,40 @@ class PredictionPipeline:
         tensor = PredictionPipeline.prepare_character(character).unsqueeze(0).to(device)
 
         with torch.inference_mode():
-            output = model(tensor)
-            probabilities = torch.softmax(output, dim=1)
+            probabilities = torch.softmax(model(tensor), dim=1)
 
         confidence, prediction = probabilities.max(dim=1)
 
         return prediction.item(), confidence.item()
 
     @staticmethod
-    def predict_character_topk(model: torch.nn.Module, character: Image.Image, device: torch.device, k: int = 5) -> list[tuple[int, float]]:
+    def predict_character_topk(model: torch.nn.Module, character: Image.Image, device: torch.device, k: int = 10) -> list[tuple[int, float]]:
         tensor = PredictionPipeline.prepare_character(character).unsqueeze(0).to(device)
 
         with torch.inference_mode():
-            output = model(tensor)
-            probabilities = torch.softmax(output, dim=1)
+            probabilities = torch.softmax(model(tensor), dim=1)
 
         k = min(k, probabilities.shape[1])
-
-        confidences, predictions = torch.topk(
+        confidence, prediction = torch.topk(
             probabilities,
-            k=k,
+            k,
             dim=1,
         )
 
         return [
-            (prediction.item(), confidence.item())
-            for prediction, confidence in zip(
-                predictions[0],
-                confidences[0],
+            (p.item(), c.item())
+            for p, c in zip(
+                prediction[0],
+                confidence[0],
             )
         ]
 
-    def predict_character_candidates(self, model: torch.nn.Module, character: Image.Image, device: torch.device, k: int = 5) -> list[tuple[str, float]]:
+    def predict_character_candidates(self, model: torch.nn.Module, character: Image.Image, device: torch.device, k: int = 10) -> list[tuple[str, float]]:
         return [
-            (self.characters[prediction], confidence)
+            (
+                self.characters[prediction],
+                confidence,
+            )
             for prediction, confidence in self.predict_character_topk(
                 model,
                 character,
@@ -136,7 +202,7 @@ class PredictionPipeline:
             )
         ]
 
-    def predict_word_candidates(self, model: torch.nn.Module, word: list[Image.Image], device: torch.device, k: int = 5, beam_width: int = 10) -> list[tuple[str, float]]:
+    def predict_word_candidates(self, model: torch.nn.Module, word: list[Image.Image], device: torch.device, k: int = 10, beam_width: int = 100) -> list[tuple[str, float]]:
         beams = [("", 0.0)]
 
         for character in word:
@@ -150,22 +216,178 @@ class PredictionPipeline:
             next_beams = []
 
             for text, score in beams:
-                for character_name, confidence in candidates:
-                    if confidence <= 0:
-                        continue
+                for prediction, confidence in candidates:
+                    confidence = max(confidence, 1e-6)
 
                     next_beams.append(
                         (
-                            text + character_name,
+                            text + prediction,
                             score + float(np.log(confidence)),
                         )
                     )
 
             next_beams.sort(
-                key=lambda candidate: candidate[1],
+                key=lambda x: x[1],
                 reverse=True,
             )
 
             beams = next_beams[:beam_width]
 
         return beams
+
+    @staticmethod
+    def normalize_word(word: str) -> str:
+        return "".join(
+            character
+            for character in word.lower()
+            if character.isalpha()
+        )
+
+    @staticmethod
+    def word_edit_distance(source: str, target: str) -> int:
+        previous = list(range(len(target) + 1))
+
+        for i, source_character in enumerate(source, start=1):
+            current = [i]
+
+            for j, target_character in enumerate(target, start=1):
+                current.append(
+                    min(
+                        current[j - 1] + 1,
+                        previous[j] + 1,
+                        previous[j - 1]
+                        + (source_character != target_character),
+                    )
+                )
+
+            previous = current
+
+        return previous[-1]
+
+    @staticmethod
+    def word_frequency_score(word: str) -> float:
+        word = PredictionPipeline.normalize_word(word)
+
+        if not word:
+            return 0.0
+
+        return zipf_frequency(
+            word,
+            "en",
+            wordlist="best",
+        )
+
+    def language_score(self, word: str) -> float:
+        return self.language_model.score(word)
+
+    def _load_vocabulary(self, vocabulary_size: int = 50000):
+        if self._vocabulary is not None:
+            return
+
+        words = top_n_list(
+            "en",
+            vocabulary_size,
+            wordlist="best",
+        )
+
+        self._vocabulary = {
+            word.lower()
+            for word in words
+            if word.isalpha()
+        }
+
+        self._vocabulary_by_length = {}
+
+        for word in self._vocabulary:
+            self._vocabulary_by_length.setdefault(
+                len(word),
+                [],
+            ).append(word)
+
+    def score_vocabulary_word(self, word: str, character_candidates: list[list[tuple[str, float]]], frequency_weight: float = 0.10) -> float:
+        score = 0.0
+
+        for character, candidates in zip(
+            word,
+            character_candidates,
+        ):
+            probabilities = dict(candidates)
+            probability = max(
+                probabilities.get(character, 1e-6),
+                1e-6,
+            )
+
+            score += np.log(probability)
+
+        return (
+            score
+            + self.word_frequency_score(word)
+            * frequency_weight
+        )
+
+    def predict_word_vocabulary(self, model: torch.nn.Module, word: list[Image.Image], device: torch.device, k: int = 10, vocabulary_size: int = 50000, frequency_weight: float = 0.10) -> list[tuple[str, float]]:
+        self._load_vocabulary(vocabulary_size)
+
+        character_candidates = [
+            self.predict_character_candidates(
+                model,
+                character,
+                device,
+                k,
+            )
+            for character in word
+        ]
+
+        candidates = []
+
+        for vocabulary_word in self._vocabulary_by_length.get(
+            len(word),
+            [],
+        ):
+            score = self.score_vocabulary_word(
+                vocabulary_word,
+                character_candidates,
+                frequency_weight,
+            )
+
+            candidates.append(
+                (
+                    vocabulary_word,
+                    score,
+                )
+            )
+
+        candidates.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        return candidates[:20]
+
+    def rerank_word_candidates(self, candidates: list[tuple[str, float]], frequency_weight: float = 0.10, language_weight: float = 0.10) -> list[tuple[str, float]]:
+        reranked = []
+
+        for word, cnn_score in candidates:
+            normalized = self.normalize_word(word)
+            frequency = self.word_frequency_score(normalized)
+            language = self.language_score(normalized)
+
+            score = (
+                cnn_score
+                + frequency * frequency_weight
+                + language * language_weight
+            )
+
+            reranked.append(
+                (
+                    word,
+                    score,
+                )
+            )
+
+        reranked.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        return reranked

@@ -48,75 +48,127 @@ class LineSegmenter:
 
 
 class WordSegmenter:
-    def __init__(self, word_gap_threshold=8, gap_multiplier=2.0, min_gap_threshold=3):
+    def __init__(self, word_gap_threshold=8, gap_multiplier=2.0, min_gap_threshold=2):
         self.word_gap_threshold = word_gap_threshold
         self.gap_multiplier = gap_multiplier
         self.min_gap_threshold = min_gap_threshold
 
-    def find_regions(self, line):
-        projection = np.sum(line, axis=0)
-        active = projection > 0
-
+    @staticmethod
+    def find_gaps(line):
+        active = np.sum(line, axis=0) > 0
         gaps = []
-        gap_start = None
+        start = None
 
-        for x, has_ink in enumerate(active):
-            if not has_ink:
-                if gap_start is None:
-                    gap_start = x
-            elif gap_start is not None:
-                gaps.append((gap_start, x - gap_start))
-                gap_start = None
+        for x, ink in enumerate(active):
+            if ink:
+                if start is not None:
+                    gaps.append((start, x - start))
+                start = None
+            elif start is None:
+                start = x
 
-        if gap_start is not None:
-            gaps.append((gap_start, len(active) - gap_start))
+        return [(start, length) for start, length in gaps if length > 0]
 
-        gap_lengths = [length for _, length in gaps if length > 0]
+    @staticmethod
+    def cluster_gaps(lengths):
+        if len(lengths) < 4:
+            return None
 
-        adaptive_threshold = self.word_gap_threshold
+        values = np.log1p(np.asarray(lengths, dtype=float))
+        low, high = np.percentile(values, [25, 75])
 
-        if len(gap_lengths) >= 3:
-            typical_gap = float(np.median(gap_lengths))
-            adaptive_threshold = max(
-                self.min_gap_threshold,
-                round(typical_gap * self.gap_multiplier),
-            )
+        for _ in range(20):
+            low_group = values[np.abs(values - low) <= np.abs(values - high)]
+            high_group = values[np.abs(values - high) < np.abs(values - low)]
+
+            if not len(low_group) or not len(high_group):
+                return None
+
+            new_low = float(np.mean(low_group))
+            new_high = float(np.mean(high_group))
+
+            if abs(new_low - low) < 1e-4 and abs(new_high - high) < 1e-4:
+                break
+
+            low, high = new_low, new_high
+
+        if high <= low:
+            return None
+
+        return np.expm1(low_group), np.expm1(high_group)
+
+    def find_threshold(self, gaps, line_width):
+        lengths = [length for _, length in gaps if length >= self.min_gap_threshold]
+
+        if len(lengths) < 4:
+            return float(self.word_gap_threshold)
+
+        clusters = self.cluster_gaps(lengths)
+
+        if clusters is None:
+            return float(self.word_gap_threshold)
+
+        small, large = clusters
+        small_center = float(np.median(small))
+        large_center = float(np.median(large))
+
+        if large_center / max(small_center, 1.0) < 1.6:
+            return float(self.word_gap_threshold)
+
+        threshold = max(
+            (small_center + large_center) / 2,
+            small_center * self.gap_multiplier,
+            float(self.min_gap_threshold),
+        )
+
+        return min(threshold, max(line_width * 0.15, threshold))
+
+    def find_regions(self, line):
+        active = np.sum(line, axis=0) > 0
+        gaps = self.find_gaps(line)
+        threshold = self.find_threshold(gaps, len(active))
 
         regions = []
         start = None
-        gap_start = None
 
-        for x, has_ink in enumerate(active):
-            if has_ink:
+        for x, ink in enumerate(active):
+            if ink:
                 if start is None:
                     start = x
+                continue
 
-                if gap_start is not None:
-                    gap_length = x - gap_start
+            if start is None:
+                continue
 
-                    if gap_length > adaptive_threshold:
-                        regions.append((start, gap_start))
-                        start = x
+            end = x
 
-                    gap_start = None
+            while end < len(active) and not active[end]:
+                end += 1
 
-            elif start is not None and gap_start is None:
-                gap_start = x
+            if end - x >= threshold:
+                if start < x:
+                    regions.append((start, x))
+                start = end if end < len(active) else None
 
         if start is not None:
-            end = gap_start if gap_start is not None and len(active) - gap_start > adaptive_threshold else len(active)
-            regions.append((start, end))
+            end = len(active)
+            while end > start and not active[end - 1]:
+                end -= 1
+            if start < end:
+                regions.append((start, end))
 
         return regions
 
     def crop(self, line, regions):
-        return [self.crop_to_ink(line[:, x1:x2]) for x1, x2 in regions]
+        return [self.crop_to_ink(line[:, x1:x2]) for x1, x2 in regions if x1 < x2]
 
     @staticmethod
     def crop_to_ink(image):
         ys, xs = np.where(image)
+
         if len(xs) == 0:
             raise ValueError("No handwriting detected.")
+
         return image[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
 
 
@@ -224,55 +276,56 @@ class ConjoinedCharacterSegmenter:
 
     def evaluate_split(self, word, region, split, model, device):
         x1, x2 = region
-        left_width = split - x1
-        right_width = x2 - split
-        width_ratio = min(left_width, right_width) / max(left_width, right_width)
+        lw, rw = split - x1, x2 - split
+        nw = self.normal_width or self.min_character_width
 
-        if width_ratio < 0.2:
+        if min(lw, rw) < self.min_character_width:
+            return 0.0, -1, -1, 0.0, 0.0
+
+        width_score = min(lw / nw, rw / nw, 1.0)
+        if width_score < 0.35:
             return 0.0, -1, -1, 0.0, 0.0
 
         left = self.crop_to_ink(word[:, x1:split])
         right = self.crop_to_ink(word[:, split:x2])
 
-        left_height, right_height = left.shape[0], right.shape[0]
-        left_area, right_area = np.count_nonzero(left), np.count_nonzero(right)
-
-        normal_width = self.normal_width or self.min_character_width
-        normal_height = word.shape[0]
-
-        min_height = int(normal_height * 0.35)
-        min_area = max(4, int(normal_width * normal_height * 0.02))
-
-        if left_height < min_height or right_height < min_height:
+        minimum_area = max(4, int(nw * word.shape[0] * 0.02))
+        if min(np.count_nonzero(left), np.count_nonzero(right)) < minimum_area:
             return 0.0, -1, -1, 0.0, 0.0
 
-        if left_area < min_area or right_area < min_area:
+        left = crop_and_center_drawing(Image.fromarray((~left * 255).astype(np.uint8), mode="L"))
+        right = crop_and_center_drawing(Image.fromarray((~right * 255).astype(np.uint8), mode="L"))
+
+        if left is None or right is None:
             return 0.0, -1, -1, 0.0, 0.0
 
-        left = self.crop_to_ink(word[:, x1:split])
-        right = self.crop_to_ink(word[:, split:x2])
+        lc = self.predict_topk(model, left, device, 3)
+        rc = self.predict_topk(model, right, device, 3)
 
-        left_image = crop_and_center_drawing(Image.fromarray((~left * 255).astype(np.uint8), mode="L"))
-        right_image = crop_and_center_drawing(Image.fromarray((~right * 255).astype(np.uint8), mode="L"))
-
-        if left_image is None or right_image is None:
+        if not lc or not rc:
             return 0.0, -1, -1, 0.0, 0.0
 
-        left_prediction, left_confidence = self.predict(model, left_image, device)
-        right_prediction, right_confidence = self.predict(model, right_image, device)
+        lp, lconf = lc[0]
+        rp, rconf = rc[0]
+        cnn_score = np.sqrt(lconf * rconf)
 
-        confidence = np.sqrt(left_confidence * right_confidence)
+        projection = np.sum(word[:, x1:x2], axis=0)
+        p = split - x1
+        window = max(2, int(nw * 0.15))
+        around = np.r_[
+            projection[max(0, p - window):p],
+            projection[p + 1:min(len(projection), p + window + 1)]
+        ]
 
-        start = max(0, split - x1 - 3)
-        end = min(x2 - x1, split - x1 + 4)
-        projection = np.sum(word[:, x1:x2], axis=0).astype(float)
-        local = projection[start:end]
-        valley_depth = 1.0 - projection[split - x1] / max(np.mean(local), 1.0)
-        valley_score = np.clip(0.5 + 0.5 * valley_depth, 0.5, 1.0)
+        valley = np.clip(
+            1.0 - projection[p] / max(np.median(around), 1.0),
+            0.0,
+            1.0,
+        )
 
-        score = confidence * valley_score
+        score = cnn_score * (0.5 + 0.5 * valley) * np.sqrt(width_score)
 
-        return score, left_prediction, right_prediction, left_confidence, right_confidence
+        return score, lp, rp, lconf, rconf
 
     def evaluate_unsplit(self, word, region, model, device):
         x1, x2 = region
@@ -374,6 +427,21 @@ class ConjoinedCharacterSegmenter:
 
         confidence, prediction = probabilities.max(dim=1)
         return prediction.item(), confidence.item()
+    
+    @staticmethod
+    def predict_topk(model, image, device, k=3):
+        tensor = prepare_symbol_image(image).unsqueeze(0).to(device)
+
+        with torch.inference_mode():
+            probabilities = torch.softmax(model(tensor), dim=1)
+
+        k = min(k, probabilities.shape[1])
+        confidence, prediction = torch.topk(probabilities, k, dim=1)
+
+        return [
+            (p.item(), c.item())
+            for p, c in zip(prediction[0], confidence[0])
+        ]
 
 class SegmentationPipeline:
     def __init__(self, line_segmenter, word_segmenter, character_segmenter, conjoined_segmenter=None):
