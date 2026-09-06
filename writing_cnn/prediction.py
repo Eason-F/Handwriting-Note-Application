@@ -39,7 +39,8 @@ class PredictionPipeline:
 
         return float(np.median(values) * 2)
     
-    def normalize_stroke_thickness(self, image: Image.Image, target_width: float = 3.0, tolerance: float = 0.5) -> Image.Image:
+    @staticmethod
+    def normalize_stroke_thickness(image: Image.Image, target_width: float = 3.0, tolerance: float = 0.5) -> Image.Image:
         image_array = np.asarray(image.convert("L"))
         ink = image_array < 128
 
@@ -49,7 +50,7 @@ class PredictionPipeline:
         kernel = np.ones((3, 3), np.uint8)
 
         for _ in range(3):
-            width = self.estimate_stroke_width(ink)
+            width = PredictionPipeline.estimate_stroke_width(ink)
 
             if abs(width - target_width) <= tolerance:
                 break

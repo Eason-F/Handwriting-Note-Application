@@ -3,7 +3,7 @@ import torch
 from PIL import Image
 
 from math_cnn.images import crop_and_center_drawing, prepare_symbol_image
-
+from writing_cnn.prediction import PredictionPipeline
 
 class LineSegmenter:
     def __init__(self, min_ink_pixels=8, max_internal_gap=2, min_line_height=10):
@@ -335,14 +335,23 @@ class ConjoinedCharacterSegmenter:
     def process(self, word, character_regions, model, device):
         regions = character_regions.copy()
 
-        for region in self.find_candidates(word, regions):
-            split, _, _, _ = self.find_best_split(word, region, model, device)
+        changed = True
+        while changed:
+            changed = False
 
-            if split is None:
-                continue
+            for region in self.find_candidates(word, regions):
+                split, _, _, _ = self.find_best_split(word, region, model, device)
 
-            index = regions.index(region)
-            regions[index:index + 1] = [(region[0], split), (split, region[1])]
+                if split is None:
+                    continue
+
+                index = regions.index(region)
+                regions[index:index + 1] = [
+                    (region[0], split),
+                    (split, region[1]),
+                ]
+                changed = True
+                break
 
         return regions
 
@@ -357,6 +366,7 @@ class ConjoinedCharacterSegmenter:
 
     @staticmethod
     def predict(model, character, device):
+        character = PredictionPipeline.normalize_stroke_thickness(character)
         tensor = prepare_symbol_image(character).unsqueeze(0).to(device)
 
         with torch.inference_mode():
