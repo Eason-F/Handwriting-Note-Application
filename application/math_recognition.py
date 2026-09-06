@@ -118,6 +118,20 @@ class MathRecognizer:
         boxes = self._merge_components(self._components(cropped))
         return [cropped.crop(box) for box in boxes]
 
+    def predict_single(self, image, top_k=3):
+        if not self.ready:
+            raise RuntimeError(f'Math model unavailable: {self.error or "unknown error"}')
+        grayscale = image.convert('L')
+        bbox = ImageOps.invert(grayscale).getbbox()
+        if bbox is None:
+            return []
+        symbol = grayscale.crop(bbox)
+        with torch.inference_mode():
+            tensor = prepare_symbol_image(symbol).unsqueeze(0).to(self.device)
+            probs = self.model(tensor).softmax(dim=1)[0]
+            values, indexes = probs.topk(top_k)
+        return [(self.symbols[index]['latex'], value) for value, index in zip(values.tolist(), indexes.tolist())]
+
     def predict_symbols(self, image, top_k=3):
         if not self.ready:
             raise RuntimeError(f'Math model unavailable: {self.error or "unknown error"}')

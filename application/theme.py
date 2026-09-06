@@ -28,6 +28,9 @@ QLineEdit, QTextEdit, QListWidget, QComboBox {{
 }}
 QLineEdit {{ padding: 7px 9px; }}
 QTextEdit#editor {{ border: 0; border-radius: 0; padding: 26px 64px; font-size: 16px; selection-background-color: {ACCENT_SOFT}; }}
+QTextBrowser#viewer {{ border: 0; border-radius: 0; padding: 26px 64px; font-size: 16px; background: {EDITOR}; }}
+QLabel#viewModeLabel {{ color: {MUTED}; background: {PANEL}; padding: 6px 14px; border-top: 1px solid {BORDER}; font-size: 11px; }}
+QLabel#mathStream {{ color: {WHITE}; background: {PANEL}; border: 1px solid {BORDER}; border-radius: 6px; padding: 8px 10px; font-family: monospace; font-size: 13px; }}
 QListWidget {{ border: 0; padding: 4px; }}
 QListWidget::item {{ padding: 8px 10px; border-radius: 5px; }}
 QListWidget::item:selected {{ background: {ACCENT_SOFT}; color: {WHITE}; }}
@@ -35,32 +38,15 @@ QPushButton {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid {BORDER};
 QPushButton:hover {{ background: #444a50; border-color: #5b6269; }}
 QPushButton#primary {{ background: {ACCENT}; color: #1e2822; border: 0; font-weight: 700; }}
 QPushButton#primary:hover {{ background: #a3c0b1; }}
-QToolBar {{ background: {PANEL}; border: 0; spacing: 5px; padding: 5px 7px; }}
+QToolBar {{ background: {PANEL}; border: 0; spacing: 4px; padding: 5px; }}
 QToolButton {{ color: {TEXT}; background: transparent; border-radius: 5px; padding: 6px; }}
-QTabBar {{ background: transparent; }}
-QTabBar::tab {{ background: #363b40; color: {MUTED}; border: 1px solid transparent; border-radius: 6px; padding: 7px 13px; margin: 1px 2px; min-width: 70px; }}
-QTabBar::tab:hover {{ background: #40464b; color: {TEXT}; }}
-QTabBar::tab:selected {{ background: {EDITOR}; color: {WHITE}; border-color: {BORDER}; }}
 QToolButton:hover {{ background: {PANEL_2}; }}
 QTabWidget::pane {{ border: 0; background: {EDITOR}; }}
 QTabBar {{ background: {PANEL}; }}
 QTabBar::tab {{ background: {PANEL}; color: {MUTED}; padding: 9px 14px; border: 0; }}
 QTabBar::tab:selected {{ color: {WHITE}; background: {EDITOR}; }}
-QPushButton#modeToggle {{
-    background: {PANEL_2};
-    color: {TEXT};
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    padding: 6px 12px;
-    min-width: 70px;
-}}
-QPushButton#modeToggle:hover {{ background: #444a50; border-color: #5b6269; }}
-QPushButton#modeToggle:checked {{
-    background: {ACCENT};
-    color: #1e2822;
-    border-color: {ACCENT};
-    font-weight: 700;
-}}
-QPushButton#modeToggle:checked:hover {{ background: #a3c0b1; border-color: #a3c0b1; }}
+QTabBar::tab:hover {{ background: {PANEL_2}; color: {WHITE}; }}
+QPushButton#modeButton {{ border-radius: 14px; padding: 6px 13px; background: {ACCENT_SOFT}; color: {WHITE}; }}
+QComboBox {{ padding: 7px 9px; }}
 QStatusBar {{ background: {PANEL}; color: {MUTED}; }}
 '''

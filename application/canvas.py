@@ -1,5 +1,6 @@
+import io
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -65,8 +66,12 @@ class InkCanvas(QWidget):
         self.changed.emit()
 
     def to_pil(self):
-        image = self.image.convertToFormat(QImage.Format.Format_Grayscale8)
-        return Image.frombytes('L', (image.width(), image.height()), bytes(image.bits()))
+        encoded = QByteArray()
+        buffer = QBuffer(encoded)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        self.image.save(buffer, 'PNG')
+        buffer.close()
+        return Image.open(io.BytesIO(bytes(encoded))).convert('L').copy()
 
     def has_ink(self):
         return min(self.to_pil().getextrema()) < 245
