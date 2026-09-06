@@ -5,4 +5,5 @@ __pycache__/
 data/
 checkpoints/
 test_results/
+notes/
 
