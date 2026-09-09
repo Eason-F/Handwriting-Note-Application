@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-from .images import prepare_symbol_image
+from .images import prepare_symbol_image, crop_and_center_drawing
 from writing_cnn.data import EMNISTDataset
 
 @dataclass(frozen=True)
@@ -94,6 +94,8 @@ class HASYDataset(Dataset):
     def __getitem__(self, index: int):
         image_path, class_index = self.samples[index]
         with Image.open(image_path) as image:
+            image = crop_and_center_drawing(image)
+            
             image = EMNISTDataset.augment_image(image) if self.augment else image
             tensor = prepare_symbol_image(image, False)
         return tensor, class_index

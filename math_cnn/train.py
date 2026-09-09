@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--patience", type=int, default=3)
+    parser.add_argument("--patience", type=int, default=2)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--log-every", type=int, default=100)
@@ -84,7 +84,7 @@ def main():
 
     symbols = load_symbols(args.data)
     train_csv, test_csv = fold_paths(args.data, args.fold)
-    hasy_train = HASYDataset(train_csv, symbols, augment=False)
+    hasy_train = HASYDataset(train_csv, symbols, augment=True)
     hasy_test = HASYDataset(test_csv, symbols, augment=False)
     
     test_loader = DataLoader(
@@ -100,7 +100,7 @@ def main():
     
     sample_counts = HASYDataset.get_total_class_samples(symbols)
     total_samples = np.sum(sample_counts)
-    weights = total_samples / (sample_counts + 10.0)
+    weights = total_samples / (sample_counts)
     weights = (weights / np.sum(weights)) * len(hasy_train)
     weights_tensor = torch.tensor(weights, dtype=torch.float32).to(device)
 

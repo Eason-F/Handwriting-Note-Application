@@ -112,8 +112,8 @@ class HandwritingRecognizer:
             method="wordfreq_hybrid",
             character_top_k=8,
             beam_width=100,
-            frequency_weight=0.10,
-            lm_weight=0.25,
+            frequency_weight=0.50,
+            lm_weight=0.5,
         )
         raw_lines = self.pipeline.predict(
             segmented, 
