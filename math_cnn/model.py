@@ -32,14 +32,14 @@ class SymbolCNN(nn.Module):
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
             
-            nn.AdaptiveAvgPool2d((4, 4))
+            nn.AdaptiveAvgPool2d((8, 8))
         )
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 4 * 4, 256),
+            nn.Linear(128 * 8 * 8, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(p=0.2),
-            nn.Linear(256, number_of_classes),
+            nn.Linear(512, number_of_classes),
         )
 
     def forward(self, images):

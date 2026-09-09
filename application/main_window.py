@@ -227,21 +227,26 @@ class MainWindow(QMainWindow):
         if self.handwriting_window is not None:
             self._resize_handwriting_window(); self.handwriting_window.show(); self.handwriting_window.raise_(); self.handwriting_window.activateWindow(); return
         dialog = QDialog(self, Qt.WindowType.Tool | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
-        dialog.setObjectName('handwritingWindow'); dialog.setStyleSheet(STYLESHEET); dialog.setWindowTitle(f'Handwriting — {self.mode} mode'); dialog.setModal(False)
+        dialog.setObjectName('handwritingWindow'); dialog.setStyleSheet(STYLESHEET); 
+        dialog.setWindowTitle(f'Handwriting — {self.mode} mode'); dialog.setModal(False)
+        
         panel = QWidget(); layout = QVBoxLayout(panel); layout.setContentsMargins(10, 8, 10, 9); layout.setSpacing(6)
-        header = QHBoxLayout(); header.setSpacing(6); title = QLabel('Pause after writing to convert automatically.'); header.addWidget(title); spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred); header.addWidget(spacer)
+        
+        header = QHBoxLayout(); header.setSpacing(6); title = QLabel('Pause after writing to convert automatically.'); 
+        header.addWidget(title); spacer = QWidget(); spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred); header.addWidget(spacer)
         clear = QPushButton('Clear'); recognise = QPushButton('Recognise'); recognise.setObjectName('primary'); inspect = QPushButton('Inspect segments'); insert_ink = QPushButton('Insert ink')
         trackpad = QCheckBox('Trackpad draw'); trackpad.setToolTip('Move the trackpad without holding the mouse button. The pointer starts near the canvas top-left.')
         header.addWidget(trackpad); header.addWidget(clear); header.addWidget(recognise); header.addWidget(inspect); header.addWidget(insert_ink); layout.addLayout(header)
         expression_label = None
         if self.mode == 'Math':
             expression_label = QLabel('Expression:  —  • draw one symbol, then pause'); expression_label.setObjectName('mathStream'); layout.addWidget(expression_label)
-            canvas = InkCanvas(pen_width=4, min_size=(190, 190), logical_size=(520, 520)); canvas.setFixedSize(190, 190)
+            canvas = InkCanvas(pen_width=5, min_size=(190, 190), logical_size=(520, 520)); canvas.setFixedSize(190, 190)
             canvas_wrap = QHBoxLayout(); canvas_wrap.setContentsMargins(0, 0, 0, 0); canvas_wrap.addStretch(); canvas_wrap.addWidget(canvas); canvas_wrap.addStretch(); layout.addLayout(canvas_wrap)
             info = QLabel('Draw one symbol in the square.'); info.setObjectName('status'); layout.addWidget(info)
             self.math_expression = ''
         else:
-            canvas = InkCanvas(pen_width=5, min_size=(560, 180), logical_size=(1400, 520)); canvas.setFixedSize(760, 170)
+            canvas = InkCanvas(pen_width=5, min_size=(560, 180), logical_size=(1400, 520)); 
+            canvas.setFixedSize(760, 170)
             layout.addWidget(canvas, 0, Qt.AlignmentFlag.AlignCenter)
             info = QLabel(''); info.setObjectName('status'); layout.addWidget(info)
         clear.clicked.connect(canvas.clear)

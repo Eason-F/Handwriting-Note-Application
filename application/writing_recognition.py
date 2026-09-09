@@ -82,7 +82,7 @@ class HandwritingRecognizer:
             self.model.eval()
             self.pipeline = PredictionPipeline(list(EMNIST_BYCLASS_CHARACTERS))
             self.segmentation = SegmentationPipeline(
-                LineSegmenter(min_ink_pixels=8, max_internal_gap=2, min_line_height=10),
+                LineSegmenter(),
                 WordSegmenter(),
                 CharacterSegmenter(),
                 ConjoinedCharacterSegmenter(width_multiplier=1.8, min_character_width=5),
@@ -109,7 +109,11 @@ class HandwritingRecognizer:
             segmented, 
             self.model, 
             self.device, 
-            method="wordfreq_hybrid"
+            method="wordfreq_hybrid",
+            character_top_k=8,
+            beam_width=100,
+            frequency_weight=0.10,
+            lm_weight=0.25,
         )
         raw_lines = self.pipeline.predict(
             segmented, 

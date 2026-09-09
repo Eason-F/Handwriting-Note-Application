@@ -22,7 +22,7 @@ class ResidualBlock(nn.Module):
             nn.Conv2d(out_channels, hidden, 1),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden, out_channels, 1),
-            nn.Sigmoid(),
+            nn.Sigmoid()
         )
 
         if in_channels != out_channels or stride != 1:

@@ -140,70 +140,26 @@ class TestWindow(QMainWindow):
                 self.device,
             )
 
-            raw_lines = []
-            beam_lines = []
-            reranked_lines = []
-            vocabulary_lines = []
+            final_lines = self.prediction_pipeline.predict(
+                segmented, 
+                self.model, 
+                self.device, 
+                method="wordfreq_hybrid",
+                character_top_k=8,
+                beam_width=90,
+                frequency_weight=0.05,
+                lm_weight=0.10,
+            )
+            
+            raw_lines = self.prediction_pipeline.predict(
+                segmented, 
+                self.model, 
+                self.device, 
+                method="cnn"
+            )
 
-            for line in segmented:
-                raw_words = []
-                beam_words = []
-                reranked_words = []
-                vocabulary_words = []
-
-                for word in line:
-                    raw = ""
-                    for character in word:
-                        prediction, _ = self.prediction_pipeline.predict_character(
-                            self.model,
-                            character,
-                            self.device,
-                        )
-                        raw += self.prediction_pipeline.characters[prediction]
-
-                    raw_words.append(raw)
-
-                    beam = self.prediction_pipeline.predict_word_candidates(
-                        self.model,
-                        word,
-                        self.device,
-                        k=10,
-                        beam_width=100,
-                    )
-
-                    if beam:
-                        beam_words.append(beam[0][0])
-
-                    reranked = self.prediction_pipeline.rerank_word_candidates(
-                        beam,
-                        frequency_weight=0.10,
-                        language_weight=0.10,
-                    )
-
-                    if reranked:
-                        reranked_words.append(reranked[0][0])
-
-                    vocabulary = self.prediction_pipeline.predict_word_vocabulary(
-                        self.model,
-                        word,
-                        self.device,
-                        k=10,
-                        vocabulary_size=50000,
-                        frequency_weight=0.10,
-                    )
-
-                    if vocabulary:
-                        vocabulary_words.append(vocabulary[0][0])
-
-                raw_lines.append(" ".join(raw_words))
-                beam_lines.append(" ".join(beam_words))
-                reranked_lines.append(" ".join(reranked_words))
-                vocabulary_lines.append(" ".join(vocabulary_words))
-
-            raw_text = "\n".join(raw_lines)
-            beam_text = "\n".join(beam_lines)
-            reranked_text = "\n".join(reranked_lines)
-            vocabulary_text = "\n".join(vocabulary_lines)
+            raw_text = '\n'.join([' '.join(word) for word in raw_lines])
+            final_text = '\n'.join([' '.join(word) for word in final_lines])
 
             if not raw_text:
                 self.prediction.setText("No handwriting detected.")
@@ -211,9 +167,7 @@ class TestWindow(QMainWindow):
 
             self.prediction.setText(
                 f"Raw CNN:\n{raw_text}\n\n"
-                f"Beam:\n{beam_text}\n\n"
-                f"Beam + LM:\n{reranked_text}\n\n"
-                f"Vocabulary:\n{vocabulary_text}"
+                f"Vocabulary:\n{final_text}"
             )
 
         except ValueError as error:

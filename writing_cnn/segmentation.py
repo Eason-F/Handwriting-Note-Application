@@ -477,7 +477,7 @@ class ConjoinedCharacterSegmenter:
             if region[1] - region[0] >= threshold
         ]
 
-    def find_split_candidates(self, word, region, num_candidates=5, smoothing_window=3):
+    def find_split_candidates(self, word, region, num_candidates=10, smoothing_window=3):
         x1, x2 = region
         width = x2 - x1
 
@@ -505,10 +505,7 @@ class ConjoinedCharacterSegmenter:
 
         candidates = []
 
-        for i in range(
-            minimum_width,
-            width - minimum_width,
-        ):
+        for i in range(minimum_width, width - minimum_width):
             left = projection[i - 1]
             current = projection[i]
             right = projection[i + 1]
@@ -730,17 +727,12 @@ class ConjoinedCharacterSegmenter:
 
         return confidence, prediction
 
-    def should_split(self, split_score, unsplit_confidence, region_width, required_improvement=0.05, minimum_split_score=0.50):
+    def should_split(self, split_score, unsplit_confidence, region_width, required_improvement=0.05, minimum_split_score=0.30):
         normal_width = self.normal_width or self.min_character_width
         width_ratio = region_width / normal_width
-        width_penalty = min(
-            1.0,
-            (1.5 / width_ratio) ** 0.5,
-        )
+        width_penalty = min(1.0, (1.5 / width_ratio) ** 0.5)
 
-        adjusted_unsplit = (
-            unsplit_confidence * width_penalty
-        )
+        adjusted_unsplit = (unsplit_confidence * width_penalty)
 
         return (
             split_score >= minimum_split_score
@@ -807,40 +799,24 @@ class ConjoinedCharacterSegmenter:
 
         print(f" Applying split at {best_split}")
 
-        return (
-            best_split,
-            best_score,
-            best_left,
-            best_right,
-        )
+        return (best_split, best_score, best_left, best_right)
 
     def process(self, word, character_regions, model, device):
         regions = character_regions.copy()
 
         while True:
-            candidates = self.find_candidates(
-                word,
-                regions,
-            )
+            candidates = self.find_candidates(word,regions)
 
             if not candidates:
                 break
-
             changed = False
 
             for region in candidates:
-                split, _, _, _ = self.find_best_split(
-                    word,
-                    region,
-                    model,
-                    device,
-                )
-
+                split, _, _, _ = self.find_best_split(word, region, model, device)
                 if split is None:
                     continue
 
                 index = regions.index(region)
-
                 regions[index:index + 1] = [
                     (region[0], split),
                     (split, region[1]),
@@ -848,10 +824,9 @@ class ConjoinedCharacterSegmenter:
 
                 changed = True
                 break
-
+            
             if not changed:
                 break
-
         return regions
 
 
@@ -909,12 +884,7 @@ class SegmentationPipeline:
                             "for conjoined-character processing."
                         )
 
-                    regions = self.conjoined_segmenter.process(
-                        word,
-                        regions,
-                        model,
-                        device,
-                    )
+                    regions = self.conjoined_segmenter.process(word, regions, model, device)
 
                 line_result.append(
                     self.character_segmenter.crop(
