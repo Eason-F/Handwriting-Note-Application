@@ -67,22 +67,25 @@ class InkCanvas(QWidget):
         return QPointF(x * self.image.width(), y * self.image.height())
 
     def _draw_to(self, point):
-        if self.last_point is None:
-            self.last_point = point
-            painter = QPainter(self.image)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QPen(self.pen_color, self._image_pen_width(), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-            painter.drawPoint(point)
-            painter.end()
-            self.update()
-            self.changed.emit()
-            return
         painter = QPainter(self.image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(self.pen_color, self._image_pen_width(), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        painter.drawLine(self.last_point, point)
+        pen = QPen(
+            self.pen_color,
+            self._image_pen_width(),
+            Qt.PenStyle.SolidLine,
+            Qt.PenCapStyle.RoundCap,
+            Qt.PenJoinStyle.RoundJoin,
+        )
+        painter.setPen(pen)
+
+        if self.last_point is None:
+            self.last_point = point
+            painter.drawPoint(point)
+        else:
+            painter.drawLine(self.last_point, point)
+            self.last_point = point
+
         painter.end()
-        self.last_point = point
         self.update()
         self.changed.emit()
 

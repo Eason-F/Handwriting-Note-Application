@@ -27,13 +27,20 @@ class MathResult:
 
 class MathRecognizer:
     replacements = {
-        r'\\times': '*', r'\\ast': '*', r'\\div': '/', r'\\cdot': '*',
-        r'\\minus': '-', r'\\plus': '+', r'\\%': '%', r'\\equiv': '=',
+        r'\\times': '*',
+        r'\\ast': '*',
+        r'\\div': '/',
+        r'\\cdot': '*',
+        r'\\minus': '-',
+        r'\\plus': '+',
+        r'\\%': '%',
+        r'\\equiv': '=',
         r'\\sqrt\{\}': 'sqrt',
     }
 
     def __init__(self):
-        self.device = torch.device('mps' if torch and torch.backends.mps.is_available() else 'cpu') if torch else None
+        device_name = 'mps' if torch and torch.backends.mps.is_available() else 'cpu'
+        self.device = torch.device(device_name) if torch else None
         self.model = None
         self.symbols = None
         self.error = None
@@ -69,7 +76,8 @@ class MathRecognizer:
                 xs, ys = [], []
                 while stack:
                     cy, cx = stack.pop()
-                    xs.append(cx); ys.append(cy)
+                    xs.append(cx)
+                    ys.append(cy)
                     for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                         ny, nx = cy + dy, cx + dx
                         if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not visited[ny, nx]:
@@ -106,7 +114,7 @@ class MathRecognizer:
                         changed = True
                 result.append(current)
             boxes = result
-        return sorted(boxes, key=lambda b: (b[0], b[1]))
+        return sorted(boxes, key=lambda box: (box[0], box[1]))
 
     def _segment(self, image):
         grayscale = image.convert('L')
@@ -130,7 +138,10 @@ class MathRecognizer:
             tensor = prepare_symbol_image(symbol).unsqueeze(0).to(self.device)
             probs = self.model(tensor).softmax(dim=1)[0]
             values, indexes = probs.topk(top_k)
-        return [(self.symbols[index]['latex'], value) for value, index in zip(values.tolist(), indexes.tolist())]
+        return [
+            (self.symbols[index]['latex'], value)
+            for value, index in zip(values.tolist(), indexes.tolist())
+        ]
 
     def predict_symbols(self, image, top_k=3):
         if not self.ready:
@@ -152,7 +163,7 @@ class MathRecognizer:
     def recognize(self, image):
         started = time.perf_counter()
         candidates = self.predict_symbols(image, top_k=3)
-        tokens = [c[0][0] if c else '' for c in candidates]
+        tokens = [candidate[0][0] if candidate else '' for candidate in candidates]
         expression = ''.join(tokens)
         for source, target in self.replacements.items():
             expression = expression.replace(source, target)

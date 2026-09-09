@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 
 try:
     import torch
@@ -7,7 +7,6 @@ except ImportError:
     torch = None
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
-import numpy as np
 
 from writing_cnn.data import EMNIST_BYCLASS_CHARACTERS
 from writing_cnn.model import WritingCNN
@@ -106,23 +105,18 @@ class HandwritingRecognizer:
         segmentation_ms = (time.perf_counter() - segmentation_started) * 1000
 
         final_lines = self.pipeline.predict(
-            segmented, 
-            self.model, 
-            self.device, 
-            method="wordfreq_hybrid",
+            segmented,
+            self.model,
+            self.device,
+            method='wordfreq_hybrid',
             character_top_k=8,
             beam_width=100,
             frequency_weight=0.50,
             lm_weight=0.5,
         )
-        raw_lines = self.pipeline.predict(
-            segmented, 
-            self.model, 
-            self.device, 
-            method="cnn"
-        )
-        words = np.array(final_lines).size
-        characters = np.array(self.segment).size
+        raw_lines = self.pipeline.predict(segmented, self.model, self.device, method='cnn')
+        words = sum(len(line) for line in final_lines)
+        characters = sum(len(word) for line in segmented for word in line)
 
         return RecognitionResult(
             text='\n'.join([' '.join(word) for word in final_lines]),

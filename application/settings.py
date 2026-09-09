@@ -1,6 +1,15 @@
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QMessageBox, QKeySequenceEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QKeySequenceEdit,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
 
 
 DEFAULT_SHORTCUTS = {
@@ -23,30 +32,50 @@ class ShortcutSettingsDialog(QDialog):
         self.setMinimumWidth(430)
         self.edits = {}
         layout = QVBoxLayout(self)
+
         hint = QLabel('Change keyboard shortcuts used by InkNote. Changes are saved for future launches.')
-        hint.setWordWrap(True); layout.addWidget(hint)
-        form = QFormLayout(); layout.addLayout(form)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        form = QFormLayout()
+        layout.addLayout(form)
         for key, action in actions.items():
             edit = QKeySequenceEdit(QKeySequence(action.shortcut()))
             self.edits[key] = edit
             form.addRow(action.text(), edit)
-        reset = QPushButton('Reset to defaults'); reset.clicked.connect(self.reset_defaults); form.addRow('', reset)
+
+        reset = QPushButton('Reset to defaults')
+        reset.clicked.connect(self.reset_defaults)
+        form.addRow('', reset)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Save)
-        buttons.accepted.connect(self.save); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
+        buttons.accepted.connect(self.save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
     def reset_defaults(self):
-        for key, edit in self.edits.items(): edit.setKeySequence(QKeySequence(DEFAULT_SHORTCUTS[key]))
+        for key, edit in self.edits.items():
+            edit.setKeySequence(QKeySequence(DEFAULT_SHORTCUTS[key]))
 
     def save(self):
-        values = {key: edit.keySequence().toString() for key, edit in self.edits.items() if edit.keySequence().toString()}
+        values = {
+            key: edit.keySequence().toString()
+            for key, edit in self.edits.items()
+            if edit.keySequence().toString()
+        }
         seen = {}
         for key, value in values.items():
             if value in seen:
-                QMessageBox.warning(self, 'Shortcut conflict', f'“{value}” is assigned to both “{seen[value]}” and “{self._label(key)}”.')
+                QMessageBox.warning(
+                    self,
+                    'Shortcut conflict',
+                    f'“{value}” is assigned to both “{seen[value]}” and “{self._label(key)}”.',
+                )
                 return
             seen[value] = self._label(key)
         settings = QSettings('InkNote', 'InkNote')
-        for key, edit in self.edits.items(): settings.setValue(f'shortcuts/{key}', edit.keySequence().toString())
+        for key, edit in self.edits.items():
+            settings.setValue(f'shortcuts/{key}', edit.keySequence().toString())
         self.accept()
 
     def _label(self, key):
