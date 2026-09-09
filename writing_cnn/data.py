@@ -124,15 +124,3 @@ def load_emnist_source(data_dir: Path, split: str):
         builder_kwargs={"file_format": "parquet"},
         download_and_prepare_kwargs={"download_dir": data_dir.parent / "downloads"},
     )
-
-
-# Cross-validation
-
-def fold_paths(dataset_root: Path, fold: int) -> tuple[Path, Path]:
-    fold_root = dataset_root / "classification-task" / f"fold-{fold}"
-    train_csv, test_csv = fold_root / "train.csv", fold_root / "test.csv"
-
-    if not train_csv.exists() or not test_csv.exists():
-        raise FileNotFoundError(f"Could not find fold {fold}. Expected {train_csv} and {test_csv}.")
-
-    return train_csv, test_csv

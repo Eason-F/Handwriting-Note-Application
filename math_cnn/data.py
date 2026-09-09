@@ -1,19 +1,20 @@
 import csv
-import string
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from PIL import ImageOps
 from torch.utils.data import Dataset
 
 from .images import prepare_symbol_image
+from writing_cnn.data import EMNISTDataset
 
 @dataclass(frozen=True)
 class SymbolInfo:
     symbol_id: int
     latex: str
+    samples: int
+    
 
 
 COMMON_GREEK_SYMBOLS = {
@@ -40,7 +41,7 @@ COMMON_MATHS_SYMBOLS = {
     r"\sqrt{}"
 }
 
-COMMON_MATH_ALPHANUMERIC = {"a", "b", "c", "x", "y", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", }
+COMMON_MATH_ALPHANUMERIC = {"a", "b", "c", "x", "y", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0"}
 
 def load_symbols(
     dataset_root: Path,
@@ -56,10 +57,15 @@ def load_symbols(
     symbols: list[SymbolInfo] = []
     with symbols_file.open(newline="", encoding="utf-8") as file:
         for row in csv.DictReader(file):
-            latex = row["latex"]
-            if latex not in allowed_symbols:
+            if row["latex"] not in allowed_symbols:
                 continue
-            symbols.append(SymbolInfo(int(row["symbol_id"]), latex))
+            symbols.append(
+                SymbolInfo(
+                    int(row["symbol_id"]), 
+                    str(row["latex"]), 
+                    int(row["training_samples"]) + int(row["test_samples"])
+                )
+            )
     return sorted(symbols, key=lambda symbol: symbol.symbol_id)
 
 class HASYDataset(Dataset):
@@ -77,6 +83,10 @@ class HASYDataset(Dataset):
                 symbol_id = int(row["symbol_id"])
                 if symbol_id in self.class_index:
                     self.samples.append((image_path, self.class_index[symbol_id]))
+                    
+    @staticmethod
+    def get_total_class_samples(symbols) -> np.ndarray:
+        return np.array([symbol.samples for symbol in symbols], dtype=np.float32)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -84,7 +94,8 @@ class HASYDataset(Dataset):
     def __getitem__(self, index: int):
         image_path, class_index = self.samples[index]
         with Image.open(image_path) as image:
-            tensor = prepare_symbol_image(image, augment=self.augment)
+            image = EMNISTDataset.augment_image(image) if self.augment else image
+            tensor = prepare_symbol_image(image, False)
         return tensor, class_index
 
 
@@ -97,7 +108,7 @@ def fold_paths(dataset_root: Path, fold: int) -> tuple[Path, Path]:
             f"Could not find fold {fold}. Expected {train_csv} and {test_csv}."
         )
     return train_csv, test_csv
-
+        
 
 if __name__ == "__main__":
     print(load_symbols(Path("data")))

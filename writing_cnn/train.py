@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from torchmetrics.classification import MulticlassConfusionMatrix
 
-from .data import EMNISTDataset, EMNIST_BYCLASS_CHARACTERS, fold_paths, load_emnist_source
+from .data import EMNISTDataset, EMNIST_BYCLASS_CHARACTERS, load_emnist_source
 from .model import WritingCNN
 
 
@@ -102,8 +102,6 @@ def main():
     device = choose_device(args.device)
     symbols = list(EMNIST_BYCLASS_CHARACTERS)
     number_of_classes = len(symbols)
-
-    train_csv, test_csv = fold_paths(args.data, args.fold)
 
     print("Loading EMNIST ByClass through TFDS...")
 
