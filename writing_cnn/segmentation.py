@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -16,7 +17,13 @@ class LineSegmenter:
 
     def find_regions(self, binary):
         projection = np.sum(binary, axis=1)
-        active = projection >= self.min_ink_pixels
+        image_height, _ = binary.shape
+        nonzero_projection = projection[projection > 0]
+        estimated_row_ink = np.percentile(nonzero_projection, 30) if len(nonzero_projection) else 0
+        minimum_ink = min(self.min_ink_pixels, max(2, round(float(estimated_row_ink))))
+        maximum_gap = max(self.max_internal_gap, round(image_height * 0.005))
+        minimum_height = min(self.min_line_height, max(2, round(image_height * 0.05)))
+        active = projection >= minimum_ink
         regions, start, gap = [], None, 0
 
         for y, ink in enumerate(active):
@@ -26,15 +33,15 @@ class LineSegmenter:
                 gap = 0
             elif start is not None:
                 gap += 1
-                if gap > self.max_internal_gap:
-                    end = y - gap
-                    if end - start >= self.min_line_height:
+                if gap > maximum_gap:
+                    end = y - gap + 1
+                    if end - start >= minimum_height:
                         regions.append((start, end))
                     start, gap = None, 0
 
         if start is not None:
             end = len(active) - gap
-            if end - start >= self.min_line_height:
+            if end - start >= minimum_height:
                 regions.append((start, end))
 
         return regions
@@ -45,7 +52,7 @@ class LineSegmenter:
     @staticmethod
     def crop_to_ink(image):
         ys, xs = np.where(image)
-        if not np.any(xs):
+        if xs.size == 0:
             raise ValueError("No handwriting detected.")
         return image[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
 
@@ -206,43 +213,42 @@ class WordSegmenter:
 
     def find_threshold(self, gaps, runs, line_height):
         if not gaps:
-            return float(self.word_gap_threshold)
+            return float('inf')
 
-        lengths = np.asarray(
-            [length for _, length in gaps],
-            dtype=float,
-        )
+        lengths = np.asarray([length for _, length in gaps], dtype=float)
+        scale_floor = max(float(self.min_gap_threshold), line_height * 0.12)
+        if len(lengths) < 3:
+            return scale_floor
 
-        median, mad = self.gap_statistics(gaps)
+        # Cluster in log space so the decision depends on relative spacing rather
+        # than the image resolution or one unusually large gap.
+        values = np.log1p(lengths)
+        centers = np.quantile(values, (0.25, 0.75))
+        assignments = np.zeros(len(values), dtype=int)
+        for _ in range(20):
+            assignments = np.abs(values[:, None] - centers).argmin(axis=1)
+            updated = np.asarray([
+                values[assignments == cluster].mean()
+                if np.any(assignments == cluster)
+                else centers[cluster]
+                for cluster in range(2)
+            ])
+            if np.allclose(updated, centers):
+                break
+            centers = updated
 
-        adaptive = max(
-            float(self.word_gap_threshold),
-            median * self.gap_multiplier,
-            median + 2.0 * mad,
-            line_height * 0.12,
-        )
+        order = np.argsort(centers)
+        small = lengths[assignments == order[0]]
+        large = lengths[assignments == order[1]]
+        if not len(small) or not len(large):
+            return scale_floor
 
-        if len(lengths) >= 4:
-            values = np.sort(lengths)
-            jumps = values[1:] / np.maximum(values[:-1], 1.0)
-            index = int(np.argmax(jumps))
+        separation = np.median(large) / max(np.median(small), 1.0)
+        if separation < self.min_gap_ratio:
+            return scale_floor
 
-            if jumps[index] >= 1.35:
-                small = values[:index + 1]
-                large = values[index + 1:]
-
-                if len(large) and np.median(large) >= np.median(small) * self.min_gap_ratio:
-                    adaptive = max(
-                        adaptive,
-                        float(
-                            (
-                                np.median(small)
-                                + np.median(large)
-                            ) * 0.5
-                        ),
-                    )
-
-        return float(adaptive)
+        cluster_boundary = (float(np.max(small)) + float(np.min(large))) * 0.5
+        return max(scale_floor, cluster_boundary)
 
     def find_boundaries(self, line):
         runs = self.find_runs(line)
@@ -262,47 +268,13 @@ class WordSegmenter:
             line_height,
         )
 
-        normalized = self.normalized_gaps(
-            gaps,
-            runs,
-            line_height,
-        )
-
-        boundaries = []
-
-        for x, gap, local_ratio, height_ratio in normalized:
-            ratio = gap / max(
-                np.median(
-                    [item[1] for item in normalized]
-                ),
-                1.0,
-            )
-
-            if gap >= threshold:
-                boundaries.append(
-                    (
-                        x,
-                        gap,
-                        ratio,
-                        local_ratio,
-                        height_ratio,
-                    )
-                )
-                continue
-
-            if (
-                ratio >= self.strong_gap_ratio
-                and local_ratio >= self.min_gap_ratio
-            ):
-                boundaries.append(
-                    (
-                        x,
-                        gap,
-                        ratio,
-                        local_ratio,
-                        height_ratio,
-                    )
-                )
+        normalized = self.normalized_gaps(gaps, runs, line_height)
+        median_gap = max(float(np.median([item[1] for item in normalized])), 1.0)
+        boundaries = [
+            (x, gap, gap / median_gap, local_ratio, height_ratio)
+            for x, gap, local_ratio, height_ratio in normalized
+            if gap >= threshold
+        ]
 
         if not boundaries:
             boundaries = self.largest_gap_split(
@@ -383,16 +355,16 @@ class WordSegmenter:
 
     def crop(self, line, regions):
         return [
-            self.crop_to_ink(line[:, x1:x2])
+            line[:, x1:x2]
             for x1, x2 in regions
-            if x1 < x2
+            if x1 < x2 and np.any(line[:, x1:x2])
         ]
 
     @staticmethod
     def crop_to_ink(image):
         ys, xs = np.where(image)
 
-        if not np.any(xs):
+        if xs.size == 0:
             raise ValueError("No handwriting detected.")
 
         return image[
@@ -425,14 +397,24 @@ class CharacterSegmenter:
         characters = []
 
         for x1, x2 in regions:
-            image = Image.fromarray(
-                (~word[:, x1:x2] * 255).astype(np.uint8),
-                mode="L",
-            )
+            character = word[:, x1:x2]
+            ys, xs = np.where(character)
+            if xs.size == 0:
+                continue
+
+            geometry = {
+                "height_ratio": (int(ys.max()) - int(ys.min()) + 1) / word.shape[0],
+                "top_ratio": int(ys.min()) / word.shape[0],
+                "bottom_ratio": (int(ys.max()) + 1) / word.shape[0],
+                "width_to_height": (int(xs.max()) - int(xs.min()) + 1) / word.shape[0],
+                "components": cv2.connectedComponents(character.astype(np.uint8), connectivity=8)[0] - 1,
+            }
+            image = Image.fromarray((~character * 255).astype(np.uint8), mode="L")
 
             image = crop_and_center_drawing(image)
 
             if image is not None:
+                image.info["geometry"] = geometry
                 characters.append(image)
 
         return characters
@@ -447,24 +429,21 @@ class ConjoinedCharacterSegmenter:
         self.normal_width = -1
 
     def find_candidates(self, word, character_regions):
-        if len(character_regions) < 2:
+        if not character_regions:
             return []
 
-        widths = np.asarray(
-            [x2 - x1 for x1, x2 in character_regions],
-            dtype=float,
-        )
+        widths = np.asarray([x2 - x1 for x1, x2 in character_regions], dtype=float)
+        height_prior = max(float(self.min_character_width), word.shape[0] * 0.25)
+        plausible_widths = widths[widths >= height_prior * 0.35]
 
-        normal_count = max(
-            1,
-            len(widths) // 2,
-        )
-
-        self.normal_width = float(
-            np.median(
-                np.sort(widths)[:normal_count]
-            )
-        )
+        if len(plausible_widths) >= 2:
+            lower_half = np.sort(plausible_widths)[:max(1, len(plausible_widths) // 2)]
+            observed_width = float(np.median(lower_half))
+            self.normal_width = float(np.clip(observed_width, height_prior * 0.65, height_prior * 1.2))
+        else:
+            # Fully cursive words often arrive as one connected component. In
+            # that case line height provides a resolution-independent width prior.
+            self.normal_width = height_prior
 
         threshold = max(
             self.min_character_width * 2,
@@ -556,7 +535,7 @@ class ConjoinedCharacterSegmenter:
     def crop_to_ink(image):
         ys, xs = np.where(image)
 
-        if not np.any(xs):
+        if xs.size == 0:
             raise ValueError("No handwriting detected.")
 
         return image[
@@ -727,19 +706,38 @@ class ConjoinedCharacterSegmenter:
 
         return confidence, prediction
 
-    def should_split(self, split_score, unsplit_confidence, region_width, required_improvement=0.05, minimum_split_score=0.30):
+    def should_split(
+        self,
+        split_score,
+        unsplit_confidence,
+        region_width,
+        force_geometry=False,
+        required_improvement=0.05,
+        minimum_split_score=0.30,
+    ):
         normal_width = self.normal_width or self.min_character_width
         width_ratio = region_width / normal_width
         width_penalty = min(1.0, (1.5 / width_ratio) ** 0.5)
+        adjusted_unsplit = unsplit_confidence * width_penalty
 
-        adjusted_unsplit = (unsplit_confidence * width_penalty)
-
-        return (
-            split_score >= minimum_split_score
-            and split_score - adjusted_unsplit >= required_improvement
+        # A classifier can be confidently wrong when several joined letters
+        # resemble one EMNIST character. Strong geometric evidence prevents that
+        # confidence from blocking every split in fully cursive words.
+        geometry_requires_split = (
+            force_geometry
+            and width_ratio >= 2.2
+            and split_score >= minimum_split_score * 0.8
         )
 
-    def find_best_split(self, word, region, model, device):
+        return (
+            geometry_requires_split
+            or (
+                split_score >= minimum_split_score
+                and split_score - adjusted_unsplit >= required_improvement
+            )
+        )
+
+    def find_best_split(self, word, region, model, device, force_geometry=False):
         unsplit_confidence, _ = self.evaluate_unsplit(
             word,
             region,
@@ -764,13 +762,6 @@ class ConjoinedCharacterSegmenter:
                 device,
             )
 
-            print(
-                f" Split {split}: "
-                f"score={score:.3f}, "
-                f"left={left} ({left_conf:.3f}), "
-                f"right={right} ({right_conf:.3f})"
-            )
-
             if score > best_score:
                 best_split = split
                 best_score = score
@@ -783,26 +774,18 @@ class ConjoinedCharacterSegmenter:
                 best_score,
                 unsplit_confidence,
                 region[1] - region[0],
+                force_geometry,
             )
         )
 
-        print(
-            f" Best split: {best_split}, "
-            f"score={best_score:.3f}, "
-            f"unsplit={unsplit_confidence:.3f}"
-        )
-
-        print(f" Should split: {should_split}")
-
         if not should_split:
             return None, best_score, best_left, best_right
-
-        print(f" Applying split at {best_split}")
 
         return (best_split, best_score, best_left, best_right)
 
     def process(self, word, character_regions, model, device):
         regions = character_regions.copy()
+        force_geometry = len(character_regions) == 1
 
         while True:
             candidates = self.find_candidates(word,regions)
@@ -812,7 +795,7 @@ class ConjoinedCharacterSegmenter:
             changed = False
 
             for region in candidates:
-                split, _, _, _ = self.find_best_split(word, region, model, device)
+                split, _, _, _ = self.find_best_split(word, region, model, device, force_geometry)
                 if split is None:
                     continue
 
@@ -840,14 +823,40 @@ class SegmentationPipeline:
         self.conjoined_segmenter = conjoined_segmenter
 
     @staticmethod
-    def binarize(image, threshold=200):
-        return np.array(image.convert("L")) < threshold
+    def binarize(image, threshold=None):
+        grayscale = np.asarray(image.convert("L"), dtype=np.uint8)
+        if threshold is None:
+            _, binary = cv2.threshold(grayscale, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        else:
+            binary = (grayscale < threshold).astype(np.uint8)
+        return SegmentationPipeline.remove_noise(binary.astype(bool))
+
+    @staticmethod
+    def remove_noise(binary):
+        height, width = binary.shape
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(binary.astype(np.uint8), connectivity=8)
+        cleaned = np.zeros_like(binary, dtype=bool)
+        minimum_area = max(2, round(min(height, width) * 0.005))
+        vertical_edge_width = max(2, round(width * 0.01))
+        horizontal_edge_height = max(2, round(height * 0.01))
+
+        for label in range(1, count):
+            x, y, component_width, component_height, area = map(int, stats[label])
+            touches_vertical_edge = x == 0 or x + component_width == width
+            touches_horizontal_edge = y == 0 or y + component_height == height
+            thin_vertical_edge_mark = touches_vertical_edge and component_width <= vertical_edge_width
+            thin_horizontal_edge_mark = touches_horizontal_edge and component_height <= horizontal_edge_height
+            if area < minimum_area or thin_vertical_edge_mark or thin_horizontal_edge_mark:
+                continue
+            cleaned[labels == label] = True
+
+        return cleaned
 
     @staticmethod
     def find_writing_region(binary):
         ys, xs = np.where(binary)
 
-        if not np.any(xs):
+        if xs.size == 0:
             raise ValueError("No handwriting detected.")
 
         return binary[

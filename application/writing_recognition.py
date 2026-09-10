@@ -77,8 +77,7 @@ class HandwritingRecognizer:
             checkpoint = torch.load(CHECKPOINT_PATH, map_location=self.device, weights_only=True)
             self.model = WritingCNN(checkpoint['number_of_classes'])
             self.model.load_state_dict(checkpoint['model_state'])
-            self.model.to(self.device)
-            self.model.eval()
+            self.model.to(self.device).eval()
             self.pipeline = PredictionPipeline(list(EMNIST_BYCLASS_CHARACTERS))
             self.segmentation = SegmentationPipeline(
                 LineSegmenter(),

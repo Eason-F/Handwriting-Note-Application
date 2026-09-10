@@ -26,11 +26,7 @@ class EMNISTDataset(Dataset):
         return len(self.source)
 
     def __getitem__(self, index):
-        example = self.source[index]
-        image_array = np.asarray(example["image"]).squeeze().T
-
-        image = ImageOps.invert(Image.fromarray(image_array.astype(np.uint8), mode="L"))
-        image = crop_and_center_drawing(image)
+        image, label = self.load_example(self.source[index])
 
         if image is None:
             image = Image.new("L", (32, 32), 255)
@@ -41,7 +37,13 @@ class EMNISTDataset(Dataset):
         image = PredictionPipeline.normalize_stroke_thickness(image)
         tensor = prepare_symbol_image(image, False)
 
-        return tensor, int(example["label"])
+        return tensor, label
+
+    @staticmethod
+    def load_example(example):
+        image_array = np.asarray(example["image"]).squeeze().T
+        image = ImageOps.invert(Image.fromarray(image_array.astype(np.uint8), mode="L"))
+        return crop_and_center_drawing(image), int(example["label"])
 
     # Augmentation
 
@@ -109,6 +111,56 @@ class EMNISTDataset(Dataset):
         map_y = y.astype(np.float32) + dy
 
         return cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=255)
+
+
+class ContextualEMNISTDataset(Dataset):
+    """Real EMNIST glyphs cropped as if they came from handwritten words."""
+
+    def __init__(self, source, samples=None, seed=17):
+        self.source = source
+        self.samples = samples or len(source)
+        self.seed = seed
+
+    def __len__(self):
+        return self.samples
+
+    def __getitem__(self, index):
+        rng = np.random.default_rng(self.seed + index)
+        source_indexes = [int(rng.integers(0, len(self.source))), index % len(self.source), int(rng.integers(0, len(self.source)))]
+        examples = [EMNISTDataset.load_example(self.source[source_index]) for source_index in source_indexes]
+        glyphs = [self.extract_glyph(image) for image, _ in examples]
+        label = examples[1][1]
+
+        canvas = Image.new('L', (144, 48), 255)
+        boxes = []
+        x = 8
+        for glyph in glyphs:
+            target_height = int(rng.integers(23, 39))
+            scale = target_height / max(glyph.height, 1)
+            target_width = max(3, round(glyph.width * scale))
+            glyph = glyph.resize((target_width, target_height), Image.Resampling.LANCZOS)
+            y = 5 + int(rng.integers(-3, 4))
+            canvas.paste(glyph, (x, y), glyph.point(lambda pixel: 255 - pixel))
+            boxes.append((x, x + target_width))
+            x += target_width + int(rng.integers(-3, 8))
+
+        left_boundary = (boxes[0][1] + boxes[1][0]) // 2 + int(rng.integers(-2, 3))
+        right_boundary = (boxes[1][1] + boxes[2][0]) // 2 + int(rng.integers(-2, 3))
+        left_boundary = max(0, min(left_boundary, boxes[1][0]))
+        right_boundary = min(canvas.width, max(right_boundary, boxes[1][1]))
+        image = crop_and_center_drawing(canvas.crop((left_boundary, 0, right_boundary, canvas.height)))
+        if image is None:
+            image = crop_and_center_drawing(glyphs[1]) or Image.new('L', (32, 32), 255)
+        image = EMNISTDataset.augment_image(image)
+        image = PredictionPipeline.normalize_stroke_thickness(image)
+        return prepare_symbol_image(image, False), label
+
+    @staticmethod
+    def extract_glyph(image):
+        if image is None:
+            return Image.new('L', (8, 20), 255)
+        bounding_box = ImageOps.invert(image).getbbox()
+        return image.crop(bounding_box) if bounding_box else image
 
 
 # EMNIST

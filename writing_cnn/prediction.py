@@ -62,6 +62,18 @@ class CharacterLanguageModel:
 # Prediction pipeline
 
 class PredictionPipeline:
+    VISUAL_ALTERNATIVES = {
+        "0": "o",
+        "1": "li",
+        "2": "z",
+        "4": "a",
+        "5": "s",
+        "6": "gb",
+        "7": "t",
+        "8": "b",
+        "9": "gq",
+    }
+
     def __init__(self, characters, lm_vocabulary_size=50000):
         self.characters = characters
         self._vocabulary = None
@@ -86,6 +98,7 @@ class PredictionPipeline:
 
     @staticmethod
     def normalize_stroke_thickness(image, target_width=3.0, tolerance=0.5):
+        metadata = image.info.copy()
         image_array = np.asarray(image.convert("L"))
         ink = image_array < 128
 
@@ -122,7 +135,9 @@ class PredictionPipeline:
         output = np.full_like(image_array, 255)
         output[ink] = 0
 
-        return Image.fromarray(output)
+        normalized = Image.fromarray(output)
+        normalized.info.update(metadata)
+        return normalized
 
     @staticmethod
     def prepare_character(character):
@@ -217,18 +232,44 @@ class PredictionPipeline:
 
         result = []
 
-        for row_values, row_indices in zip(values, indices):
-            result.append(
-                {
-                    self.characters[index.item()]: float(value.item())
-                    for index, value in zip(
-                        row_indices,
-                        row_values,
-                    )
-                }
-            )
+        for character_image, row_values, row_indices in zip(word, values, indices):
+            candidates = {}
+            for index, value in zip(row_indices, row_values):
+                character = self.characters[index.item()]
+                probability = float(value.item())
+                candidates[character] = probability
+
+                # Dictionary and language-model candidates are lowercase. Merge
+                # case variants instead of silently assigning them near-zero odds.
+                lowercase = character.lower()
+                if lowercase != character:
+                    candidates[lowercase] = candidates.get(lowercase, 0.0) + probability
+                else:
+                    candidates[lowercase] = max(candidates.get(lowercase, 0.0), probability)
+
+                # EMNIST frequently confuses handwritten letters with visually
+                # identical digits. Retain the CNN signal with a modest penalty.
+                for alternative in self.VISUAL_ALTERNATIVES.get(character, ""):
+                    candidates[alternative] = max(candidates.get(alternative, 0.0), probability * 0.45)
+            self.apply_geometry_to_ambiguous_classes(candidates, character_image.info.get("geometry", {}))
+            result.append(candidates)
 
         return result
+
+    @staticmethod
+    def apply_geometry_to_ambiguous_classes(candidates, geometry):
+        group = ("I", "i", "l", "1")
+        evidence = sum(candidates.get(character, 0.0) for character in group)
+        if evidence <= 0:
+            return
+
+        has_dot = geometry.get("components", 1) >= 2
+        if has_dot:
+            candidates["i"] = max(candidates.get("i", 0.0), evidence * 0.85)
+            candidates["l"] = min(candidates.get("l", 0.0), evidence * 0.20)
+        else:
+            candidates["l"] = max(candidates.get("l", 0.0), evidence * 0.75)
+            candidates["i"] = min(candidates.get("i", 0.0), evidence * 0.30)
 
     # CNN decoding
 
@@ -520,6 +561,22 @@ class PredictionPipeline:
 
         return reranked
 
+    @staticmethod
+    def restore_size_based_case(candidates, characters):
+        if len(characters) < 2:
+            return candidates
+
+        geometries = [character.info.get("geometry", {}) for character in characters]
+        heights = [geometry.get("height_ratio", 1.0) for geometry in geometries]
+        tops = [geometry.get("top_ratio", 0.0) for geometry in geometries]
+        typical_height = float(np.median(heights[1:]))
+        typical_top = float(np.median(tops[1:]))
+        first_is_capital_sized = heights[0] >= typical_height * 1.15 and tops[0] <= typical_top
+
+        if not first_is_capital_sized:
+            return candidates
+        return [(word[:1].upper() + word[1:], score) for word, score in candidates]
+
     # Public word prediction
 
     def predict_word(self, model, word, device, method="hybrid", character_top_k=10, beam_width=100,
@@ -535,7 +592,7 @@ class PredictionPipeline:
             )[:limit]
 
         if method == "wordfreq":
-            return self.predict_word_wordfreq(
+            candidates = self.predict_word_wordfreq(
                 model,
                 word,
                 device,
@@ -544,6 +601,7 @@ class PredictionPipeline:
                 frequency_weight,
                 limit,
             )
+            return self.restore_size_based_case(candidates, word)
 
         if method == "hybrid":
             return self.predict_word_hybrid(
@@ -558,7 +616,7 @@ class PredictionPipeline:
             )
 
         if method == "wordfreq_hybrid":
-            return self.predict_word_wordfreq_hybrid(
+            candidates = self.predict_word_wordfreq_hybrid(
                 model,
                 word,
                 device,
@@ -568,6 +626,7 @@ class PredictionPipeline:
                 lm_weight,
                 limit,
             )
+            return self.restore_size_based_case(candidates, word)
 
         raise ValueError(
             f"Unknown prediction method: {method}"

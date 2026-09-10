@@ -1,7 +1,11 @@
+from pathlib import Path
+
+
 APP_NAME = 'InkNote'
 NOTES_DIR = 'notes'
-CHECKPOINT_PATH = 'checkpoints/writing_cnn.pt'
-MATH_CHECKPOINT_PATH = 'checkpoints/math_cnn.pt'
+RESOURCE_ROOT = Path(__file__).resolve().parent.parent
+CHECKPOINT_PATH = RESOURCE_ROOT / 'checkpoints/writing_cnn.pt'
+MATH_CHECKPOINT_PATH = RESOURCE_ROOT / 'checkpoints/math_cnn.pt'
 AUTOSAVE_MS = 900
 
 DARK = '#282b2e'
