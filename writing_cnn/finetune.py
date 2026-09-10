@@ -8,7 +8,16 @@ from torch.utils.data import ConcatDataset, DataLoader
 
 from .data import ContextualEMNISTDataset, EMNISTDataset, EMNIST_BYCLASS_CHARACTERS, load_emnist_source
 from .model import WritingCNN
-from .train import choose_device
+
+
+def choose_device(requested):
+    if requested != 'auto':
+        return torch.device(requested)
+    if torch.backends.mps.is_available():
+        return torch.device('mps')
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    return torch.device('cpu')
 
 
 def evaluate(model, loader, device):

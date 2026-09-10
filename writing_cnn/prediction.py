@@ -206,7 +206,7 @@ class PredictionPipeline:
             )
         ]
 
-    def _character_probabilities(self, model, word, device, k):
+    def _character_probabilities(self, model, word, device, k, raw=False):
         tensors = [
             self.prepare_character(character)
             for character in word
@@ -233,28 +233,34 @@ class PredictionPipeline:
         result = []
 
         for character_image, row_values, row_indices in zip(word, values, indices):
-            candidates = {}
-            for index, value in zip(row_indices, row_values):
-                character = self.characters[index.item()]
-                probability = float(value.item())
-                candidates[character] = probability
-
-                # Dictionary and language-model candidates are lowercase. Merge
-                # case variants instead of silently assigning them near-zero odds.
-                lowercase = character.lower()
-                if lowercase != character:
-                    candidates[lowercase] = candidates.get(lowercase, 0.0) + probability
-                else:
-                    candidates[lowercase] = max(candidates.get(lowercase, 0.0), probability)
-
-                # EMNIST frequently confuses handwritten letters with visually
-                # identical digits. Retain the CNN signal with a modest penalty.
-                for alternative in self.VISUAL_ALTERNATIVES.get(character, ""):
-                    candidates[alternative] = max(candidates.get(alternative, 0.0), probability * 0.45)
+            class_probabilities = {
+                self.characters[index.item()]: float(value.item())
+                for index, value in zip(row_indices, row_values)
+            }
+            if raw:
+                result.append(class_probabilities)
+                continue
+            candidates = self.merge_class_evidence(class_probabilities)
             self.apply_geometry_to_ambiguous_classes(candidates, character_image.info.get("geometry", {}))
             result.append(candidates)
 
         return result
+
+    @classmethod
+    def merge_class_evidence(cls, probabilities):
+        """Keep exact classes and sum case variants for lowercase word scoring."""
+        candidates = probabilities.copy()
+        lowercase_scores = {}
+        for character, probability in probabilities.items():
+            lowercase = character.lower()
+            lowercase_scores[lowercase] = lowercase_scores.get(lowercase, 0.0) + probability
+        candidates.update(lowercase_scores)
+
+        # Add visual alternatives after aggregation so class order cannot erase them.
+        for character, probability in probabilities.items():
+            for alternative in cls.VISUAL_ALTERNATIVES.get(character, ""):
+                candidates[alternative] = max(candidates.get(alternative, 0.0), probability * 0.45)
+        return candidates
 
     @staticmethod
     def apply_geometry_to_ambiguous_classes(candidates, geometry):
@@ -279,6 +285,7 @@ class PredictionPipeline:
             word,
             device,
             character_top_k,
+            raw=True,
         )
 
         beams = [("", 0.0)]
@@ -563,19 +570,41 @@ class PredictionPipeline:
 
     @staticmethod
     def restore_size_based_case(candidates, characters):
-        if len(characters) < 2:
-            return candidates
+        """Use short lowercase peers; ascenders alone do not establish capitals."""
+        short_letters = frozenset('acemnorsuvwxz')
+        geometries = [character.info.get('geometry', {}) for character in characters]
+        restored = []
+        for word, score in candidates:
+            if len(word) != len(characters):
+                restored.append((word, score))
+                continue
 
-        geometries = [character.info.get("geometry", {}) for character in characters]
-        heights = [geometry.get("height_ratio", 1.0) for geometry in geometries]
-        tops = [geometry.get("top_ratio", 0.0) for geometry in geometries]
-        typical_height = float(np.median(heights[1:]))
-        typical_top = float(np.median(tops[1:]))
-        first_is_capital_sized = heights[0] >= typical_height * 1.15 and tops[0] <= typical_top
+            letters = list(word)
+            # Interior case needs stronger evidence than noisy segmented crop sizes.
+            for index, (letter, geometry) in enumerate(zip(word[:1], geometries[:1])):
+                if letter not in short_letters | {'p'} or not geometry:
+                    continue
+                peers = [
+                    peer for position, (other, peer) in enumerate(zip(word, geometries))
+                    if position != index and other in short_letters
+                    and all(key in peer for key in ('height_ratio', 'top_ratio', 'bottom_ratio'))
+                ]
+                if len(peers) < 2:
+                    continue
 
-        if not first_is_capital_sized:
-            return candidates
-        return [(word[:1].upper() + word[1:], score) for word, score in candidates]
+                height = float(np.median([peer['height_ratio'] for peer in peers]))
+                top = float(np.median([peer['top_ratio'] for peer in peers]))
+                bottom = float(np.median([peer['bottom_ratio'] for peer in peers]))
+                if height <= 0:
+                    continue
+                # A capital extends upward; a lowercase p extends below the baseline.
+                taller = geometry.get('height_ratio', 0) >= height * 1.3
+                raised = geometry.get('top_ratio', 1) <= top - height * 0.2
+                aligned = abs(geometry.get('bottom_ratio', 0) - bottom) <= height * 0.2
+                if taller and raised and aligned:
+                    letters[index] = letter.upper()
+            restored.append((''.join(letters), score))
+        return restored
 
     # Public word prediction
 
@@ -677,3 +706,38 @@ class PredictionPipeline:
             result.append(line_result)
 
         return result
+
+    def predict_best_segmentation(self, hypotheses, model, device, method="hybrid", length_power=0.5, **kwargs):
+        """Choose the strongest CNN/language result for each word segmentation."""
+        if not hypotheses:
+            return [], []
+
+        layout = [len(line) for line in hypotheses[0]]
+        if any([len(line) for line in hypothesis] != layout for hypothesis in hypotheses[1:]):
+            raise ValueError('Segmentation hypotheses must share the same line and word layout.')
+
+        result, selected = [], []
+        for line_options in zip(*hypotheses):
+            result_line, selected_line = [], []
+            for word_options in zip(*line_options):
+                choices = []
+                for characters in word_options:
+                    candidates = self.predict_word(model, characters, device, method=method, limit=1, **kwargs)
+                    if not candidates and method != 'cnn':
+                        candidates = self.predict_word(model, characters, device, method='cnn', limit=1)
+                    if candidates:
+                        text, score = candidates[0]
+                        normalized_score = score / max(len(characters), 1) ** length_power
+                        choices.append((normalized_score, text, characters))
+
+                if choices:
+                    _, text, characters = max(choices, key=lambda choice: choice[0])
+                    result_line.append(text)
+                    selected_line.append(characters)
+                else:
+                    raise ValueError('No character prediction available for a segmented word.')
+
+            result.append(result_line)
+            selected.append(selected_line)
+
+        return result, selected

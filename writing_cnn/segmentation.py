@@ -423,9 +423,10 @@ class CharacterSegmenter:
 # Conjoined character segmentation
 
 class ConjoinedCharacterSegmenter:
-    def __init__(self, width_multiplier=1.5, min_character_width=5):
+    def __init__(self, width_multiplier=1.5, min_character_width=5, geometry_split_ratio=2.2):
         self.width_multiplier = width_multiplier
         self.min_character_width = min_character_width
+        self.geometry_split_ratio = geometry_split_ratio
         self.normal_width = -1
 
     def find_candidates(self, word, character_regions):
@@ -725,7 +726,7 @@ class ConjoinedCharacterSegmenter:
         # confidence from blocking every split in fully cursive words.
         geometry_requires_split = (
             force_geometry
-            and width_ratio >= 2.2
+            and width_ratio >= self.geometry_split_ratio
             and split_score >= minimum_split_score * 0.8
         )
 
@@ -785,17 +786,16 @@ class ConjoinedCharacterSegmenter:
 
     def process(self, word, character_regions, model, device):
         regions = character_regions.copy()
-        force_geometry = len(character_regions) == 1
 
         while True:
-            candidates = self.find_candidates(word,regions)
+            candidates = self.find_candidates(word, regions)
 
             if not candidates:
                 break
             changed = False
 
             for region in candidates:
-                split, _, _, _ = self.find_best_split(word, region, model, device, force_geometry)
+                split, _, _, _ = self.find_best_split(word, region, model, device, force_geometry=True)
                 if split is None:
                     continue
 
@@ -823,13 +823,29 @@ class SegmentationPipeline:
         self.conjoined_segmenter = conjoined_segmenter
 
     @staticmethod
+    def normalize_resolution(binary, target_height=24):
+        """Give segmentation a consistent ink scale, independent of page margins."""
+        _, _, stats, _ = cv2.connectedComponentsWithStats(binary.astype(np.uint8), connectivity=8)
+        components = stats[1:]
+        if not len(components):
+            return binary
+        # Ignore tiny specks and dots when estimating the main writing size.
+        substantial = components[components[:, cv2.CC_STAT_AREA] >= components[:, cv2.CC_STAT_AREA].max() * 0.01]
+        height = float(np.percentile(substantial[:, cv2.CC_STAT_HEIGHT], 75))
+        scale = target_height / max(height, 1.0)
+        output_size = (max(1, round(binary.shape[1] * scale)), max(1, round(binary.shape[0] * scale)))
+        resized = cv2.resize(binary.astype(np.float32), output_size, interpolation=cv2.INTER_AREA)
+        return resized >= 0.5
+
+    @staticmethod
     def binarize(image, threshold=None):
         grayscale = np.asarray(image.convert("L"), dtype=np.uint8)
         if threshold is None:
             _, binary = cv2.threshold(grayscale, 0, 1, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         else:
             binary = (grayscale < threshold).astype(np.uint8)
-        return SegmentationPipeline.remove_noise(binary.astype(bool))
+        binary = SegmentationPipeline.normalize_resolution(binary.astype(bool))
+        return SegmentationPipeline.remove_noise(binary)
 
     @staticmethod
     def remove_noise(binary):
@@ -905,3 +921,13 @@ class SegmentationPipeline:
             result.append(line_result)
 
         return result
+
+    def segment_word(self, image, model=None, device=None):
+        """Segment one already-cropped word without rediscovering page layout."""
+        word = self.find_writing_region(self.binarize(image))
+        regions = self.character_segmenter.find_regions(word)
+        if self.conjoined_segmenter is not None:
+            if model is None or device is None:
+                raise ValueError('Model and device are required for conjoined-character processing.')
+            regions = self.conjoined_segmenter.process(word, regions, model, device)
+        return self.character_segmenter.crop(word, regions)

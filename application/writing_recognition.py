@@ -60,37 +60,49 @@ class RecognitionWorker(QRunnable):
 
 
 class HandwritingRecognizer:
-    def __init__(self):
+    def __init__(self, checkpoint_path=CHECKPOINT_PATH):
         if torch is None:
             self.device = None
             self.model = None
             self.pipeline = None
             self.segmentation = None
+            self.segmentation_hypotheses = None
             self.error = 'PyTorch is not installed.'
             return
         self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
         self.model = None
         self.pipeline = None
         self.segmentation = None
+        self.segmentation_hypotheses = None
         self.error = None
         try:
-            checkpoint = torch.load(CHECKPOINT_PATH, map_location=self.device, weights_only=True)
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=True)
             self.model = WritingCNN(checkpoint['number_of_classes'])
             self.model.load_state_dict(checkpoint['model_state'])
             self.model.to(self.device).eval()
             self.pipeline = PredictionPipeline(list(EMNIST_BYCLASS_CHARACTERS))
-            self.segmentation = SegmentationPipeline(
-                LineSegmenter(),
-                WordSegmenter(),
-                CharacterSegmenter(),
-                ConjoinedCharacterSegmenter(width_multiplier=1.8, min_character_width=5),
-            )
+            self.segmentation = self._create_segmenter(2.2)
+            self.segmentation_hypotheses = [self._create_segmenter(ratio) for ratio in (1.8, 3.0)]
         except Exception as exc:
             self.error = f'{type(exc).__name__}: {exc}'
 
+    @staticmethod
+    def _create_segmenter(geometry_split_ratio):
+        return SegmentationPipeline(
+            LineSegmenter(),
+            WordSegmenter(),
+            CharacterSegmenter(),
+            ConjoinedCharacterSegmenter(
+                width_multiplier=1.8,
+                min_character_width=5,
+                geometry_split_ratio=geometry_split_ratio,
+            ),
+        )
+
     @property
     def ready(self):
-        return self.model is not None and self.pipeline is not None and self.segmentation is not None
+        components = (self.model, self.pipeline, self.segmentation, self.segmentation_hypotheses)
+        return all(component is not None for component in components)
 
     def segment(self, image):
         if not self.ready:
@@ -98,30 +110,39 @@ class HandwritingRecognizer:
         return self.segmentation.segment(image.convert('L'), self.model, self.device)
 
     def recognize(self, image):
+        return self._recognize(image, word_only=False)
+
+    def recognize_word(self, image):
+        return self._recognize(image, word_only=True)
+
+    def _recognize(self, image, word_only):
+        if not self.ready:
+            raise RuntimeError(f'Writing model unavailable: {self.error or "unknown error"}')
         started = time.perf_counter()
         segmentation_started = time.perf_counter()
-        segmented = self.segment(image)
+        grayscale = image.convert('L')
+        if word_only:
+            hypotheses = [[[segmenter.segment_word(grayscale, self.model, self.device)]]
+                          for segmenter in self.segmentation_hypotheses]
+        else:
+            hypotheses = [segmenter.segment(grayscale, self.model, self.device)
+                          for segmenter in self.segmentation_hypotheses]
         segmentation_ms = (time.perf_counter() - segmentation_started) * 1000
 
-        final_lines = self.pipeline.predict(
-            segmented,
-            self.model,
-            self.device,
-            method='wordfreq_hybrid',
-            character_top_k=8,
-            beam_width=100,
-            frequency_weight=0.50,
-            lm_weight=0.5,
+        final_lines, selected = self.pipeline.predict_best_segmentation(
+            hypotheses, self.model, self.device,
+            method='wordfreq_hybrid', character_top_k=8, beam_width=100,
+            frequency_weight=0.50, lm_weight=0.5,
         )
-        raw_lines = self.pipeline.predict(segmented, self.model, self.device, method='cnn')
+        raw_lines = self.pipeline.predict(selected, self.model, self.device, method='cnn')
         words = sum(len(line) for line in final_lines)
-        characters = sum(len(word) for line in segmented for word in line)
+        characters = sum(len(word) for line in selected for word in line)
 
         return RecognitionResult(
             text='\n'.join([' '.join(word) for word in final_lines]),
             raw_text='\n'.join([' '.join(word) for word in raw_lines]),
             elapsed_ms=(time.perf_counter() - started) * 1000,
-            lines=len(segmented),
+            lines=len(selected),
             words=words,
             characters=characters,
             segmentation_ms=segmentation_ms,
