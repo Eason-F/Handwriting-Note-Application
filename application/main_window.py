@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from .calculator import Calculator
 from .canvas import InkCanvas
@@ -92,6 +93,9 @@ class MainWindow(QMainWindow):
         self._tab_sync = False
         self._recognition_running = False
         self._recognition_pending = False
+        self._recognition_accept_pending = False
+        self._writing_preview = None
+        self._writing_preview_revision = None
         self.handwriting_window = None
         self.handwriting_canvas = None
         self.handwriting_info = None
@@ -573,7 +577,7 @@ class MainWindow(QMainWindow):
     def _build_handwriting_controls(self, layout):
         header = QHBoxLayout()
         header.setSpacing(6)
-        header.addWidget(QLabel('Pause after writing to convert automatically.'))
+        header.addWidget(QLabel('Pause to preview. Press Recognise to insert text.'))
         header.addStretch()
 
         trackpad = QCheckBox('Trackpad draw')
@@ -662,6 +666,9 @@ class MainWindow(QMainWindow):
 
     def _handwriting_closed(self):
         self._recognition_pending = False
+        self._recognition_accept_pending = False
+        self._writing_preview = None
+        self._writing_preview_revision = None
         self.handwriting_window = None
         self.handwriting_canvas = None
         self.handwriting_info = None
@@ -705,6 +712,8 @@ class MainWindow(QMainWindow):
     def _recognise_canvas(self, dialog, canvas, info, automatic=False, expression_label=None):
         if self._recognition_running:
             self._recognition_pending = True
+            if not automatic:
+                self._recognition_accept_pending = True
             return
         if not canvas.has_ink():
             if not automatic:
@@ -721,11 +730,16 @@ class MainWindow(QMainWindow):
                     self.writing.error or 'Could not load the writing checkpoint.',
                 )
             return
+        if not automatic and self._writing_preview_revision == canvas.revision:
+            self._writing_done(self._writing_preview, dialog, canvas, info, False, canvas.revision)
+            return
         image = canvas.to_pil()
-        info.setText('Segmenting and recognising…')
+        info.setText('Updating preview…' if automatic else 'Segmenting and recognising…')
         self._recognition_running = True
         self._recognition_pending = False
-        worker = RecognitionWorker(self.writing, image, dialog, canvas, info, automatic)
+        if not automatic:
+            self._recognition_accept_pending = False
+        worker = RecognitionWorker(self.writing, image, dialog, canvas, info, automatic, canvas.revision)
         worker.signals.finished.connect(self._writing_done)
         worker.signals.error.connect(self._writing_error)
         self.thread_pool.start(worker)
@@ -763,32 +777,47 @@ class MainWindow(QMainWindow):
             if not automatic:
                 QMessageBox.critical(dialog, 'Math recognition error', str(exc))
 
-    def _writing_done(self, result, dialog, canvas, info, automatic):
+    def _writing_done(self, result, dialog, canvas, info, automatic, revision):
         self._recognition_running = False
-        if dialog is None or not dialog.isVisible():
+        if dialog is None or not isValid(dialog) or not dialog.isVisible():
             self._recognition_pending = False
             return
+        stale = canvas.revision != revision
+        if stale or self._recognition_pending:
+            accept = self._recognition_accept_pending
+            self._recognition_pending = False
+            self._recognition_accept_pending = False
+            QTimer.singleShot(80, lambda: self._retry_writing_recognition(dialog, canvas, info, not accept))
+            return
         info.setText(
-            f'{result.text or "[no text]"}   ·   raw: {result.raw_text or "[no text]"}'
+            f'{"Preview: " if automatic else ""}{result.text or "[no text]"}'
             f'   ·   {result.lines} lines · {result.words} words · {result.characters} chars'
             f'   ·   segmentation {result.segmentation_ms:.0f} ms   ·   total {result.elapsed_ms:.0f} ms'
+            f'{"   ·   press Recognise to insert" if automatic else ""}'
         )
+        if automatic:
+            self._writing_preview = result
+            self._writing_preview_revision = revision
+            return
         if result.text:
             self._insert_text_at_cursor(result.text)
             self.status_label.setText('Handwriting converted and inserted')
+        self._writing_preview = None
+        self._writing_preview_revision = None
         canvas.clear()
         self._reset_trackpad_after_recognition(canvas)
-        if self._recognition_pending:
-            self._recognition_pending = False
-            if dialog is not None and dialog.isVisible():
-                QTimer.singleShot(80, lambda: self._recognise_canvas(dialog, canvas, info, True, None))
-        elif not automatic:
-            dialog.close()
+        dialog.close()
 
-    def _writing_error(self, error, dialog, canvas, info, automatic):
+    def _writing_error(self, error, dialog, canvas, info, automatic, revision):
         self._recognition_running = False
-        if dialog is None or not dialog.isVisible():
+        if dialog is None or not isValid(dialog) or not dialog.isVisible():
             self._recognition_pending = False
+            return
+        if canvas.revision != revision or self._recognition_pending:
+            accept = self._recognition_accept_pending
+            self._recognition_pending = False
+            self._recognition_accept_pending = False
+            QTimer.singleShot(80, lambda: self._retry_writing_recognition(dialog, canvas, info, not accept))
             return
         self._reset_trackpad_after_recognition(canvas)
         if info is not None:
@@ -796,6 +825,12 @@ class MainWindow(QMainWindow):
         if not automatic:
             QMessageBox.critical(dialog, 'Recognition error', error)
         self._recognition_pending = False
+        self._recognition_accept_pending = False
+
+    def _retry_writing_recognition(self, dialog, canvas, info, automatic):
+        widgets = (dialog, canvas, info)
+        if all(widget is not None and isValid(widget) for widget in widgets) and dialog.isVisible():
+            self._recognise_canvas(dialog, canvas, info, automatic, None)
 
     def _reset_trackpad_after_recognition(self, canvas):
         if canvas is not None and canvas.trackpad_mode:

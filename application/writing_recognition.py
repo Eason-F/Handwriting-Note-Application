@@ -34,12 +34,12 @@ class RecognitionResult:
 
 
 class WorkerSignals(QObject):
-    finished = Signal(object, object, object, object, bool)
-    error = Signal(str, object, object, object, bool)
+    finished = Signal(object, object, object, object, bool, int)
+    error = Signal(str, object, object, object, bool, int)
 
 
 class RecognitionWorker(QRunnable):
-    def __init__(self, recognizer, image, dialog=None, canvas=None, info=None, automatic=False):
+    def __init__(self, recognizer, image, dialog=None, canvas=None, info=None, automatic=False, revision=0):
         super().__init__()
         self.setAutoDelete(True)
         self.recognizer = recognizer
@@ -48,15 +48,19 @@ class RecognitionWorker(QRunnable):
         self.canvas = canvas
         self.info = info
         self.automatic = automatic
+        self.revision = revision
         self.signals = WorkerSignals()
 
     @Slot()
     def run(self):
         try:
             result = self.recognizer.recognize(self.image)
-            self.signals.finished.emit(result, self.dialog, self.canvas, self.info, self.automatic)
+            self.signals.finished.emit(result, self.dialog, self.canvas, self.info, self.automatic, self.revision)
         except Exception as exc:
-            self.signals.error.emit(f'{type(exc).__name__}: {exc}', self.dialog, self.canvas, self.info, self.automatic)
+            self.signals.error.emit(
+                f'{type(exc).__name__}: {exc}', self.dialog, self.canvas,
+                self.info, self.automatic, self.revision,
+            )
 
 
 class HandwritingRecognizer:
@@ -82,7 +86,9 @@ class HandwritingRecognizer:
             self.model.to(self.device).eval()
             self.pipeline = PredictionPipeline(list(EMNIST_BYCLASS_CHARACTERS))
             self.segmentation = self._create_segmenter(2.2)
-            self.segmentation_hypotheses = [self._create_segmenter(ratio) for ratio in (1.8, 3.0)]
+            self.segmentation_hypotheses = [
+                self._create_segmenter(ratio).conjoined_segmenter for ratio in (1.8, 3.0)
+            ]
         except Exception as exc:
             self.error = f'{type(exc).__name__}: {exc}'
 
@@ -122,11 +128,14 @@ class HandwritingRecognizer:
         segmentation_started = time.perf_counter()
         grayscale = image.convert('L')
         if word_only:
-            hypotheses = [[[segmenter.segment_word(grayscale, self.model, self.device)]]
-                          for segmenter in self.segmentation_hypotheses]
+            words = self.segmentation.segment_word_hypotheses(
+                grayscale, self.segmentation_hypotheses, self.model, self.device,
+            )
+            hypotheses = [[[word]] for word in words]
         else:
-            hypotheses = [segmenter.segment(grayscale, self.model, self.device)
-                          for segmenter in self.segmentation_hypotheses]
+            hypotheses = self.segmentation.segment_hypotheses(
+                grayscale, self.segmentation_hypotheses, self.model, self.device,
+            )
         segmentation_ms = (time.perf_counter() - segmentation_started) * 1000
 
         final_lines, selected = self.pipeline.predict_best_segmentation(

@@ -880,54 +880,41 @@ class SegmentationPipeline:
             xs.min():xs.max() + 1,
         ]
 
-    def segment(self, image, model=None, device=None):
+    def find_words(self, image):
         binary = self.binarize(image)
         writing = self.find_writing_region(binary)
-
         lines = self.line_segmenter.crop(
             writing,
             self.line_segmenter.find_regions(writing),
         )
+        return [self.word_segmenter.crop(line, self.word_segmenter.find_regions(line)) for line in lines]
 
-        result = []
+    def segment_binary_word(self, word, conjoined_segmenter=None, model=None, device=None):
+        regions = self.character_segmenter.find_regions(word)
+        if conjoined_segmenter is not None:
+            if model is None or device is None:
+                raise ValueError('Model and device are required for conjoined-character processing.')
+            regions = conjoined_segmenter.process(word, regions, model, device)
+        return self.character_segmenter.crop(word, regions)
 
-        for line in lines:
-            words = self.word_segmenter.crop(
-                line,
-                self.word_segmenter.find_regions(line),
-            )
+    def segment(self, image, model=None, device=None):
+        return [
+            [self.segment_binary_word(word, self.conjoined_segmenter, model, device) for word in line]
+            for line in self.find_words(image)
+        ]
 
-            line_result = []
-
-            for word in words:
-                regions = self.character_segmenter.find_regions(word)
-
-                if self.conjoined_segmenter is not None:
-                    if model is None or device is None:
-                        raise ValueError(
-                            "Model and device are required "
-                            "for conjoined-character processing."
-                        )
-
-                    regions = self.conjoined_segmenter.process(word, regions, model, device)
-
-                line_result.append(
-                    self.character_segmenter.crop(
-                        word,
-                        regions,
-                    )
-                )
-
-            result.append(line_result)
-
-        return result
+    def segment_hypotheses(self, image, conjoined_segmenters, model=None, device=None):
+        words = self.find_words(image)
+        return [
+            [[self.segment_binary_word(word, segmenter, model, device) for word in line] for line in words]
+            for segmenter in conjoined_segmenters
+        ]
 
     def segment_word(self, image, model=None, device=None):
         """Segment one already-cropped word without rediscovering page layout."""
         word = self.find_writing_region(self.binarize(image))
-        regions = self.character_segmenter.find_regions(word)
-        if self.conjoined_segmenter is not None:
-            if model is None or device is None:
-                raise ValueError('Model and device are required for conjoined-character processing.')
-            regions = self.conjoined_segmenter.process(word, regions, model, device)
-        return self.character_segmenter.crop(word, regions)
+        return self.segment_binary_word(word, self.conjoined_segmenter, model, device)
+
+    def segment_word_hypotheses(self, image, conjoined_segmenters, model=None, device=None):
+        word = self.find_writing_region(self.binarize(image))
+        return [self.segment_binary_word(word, segmenter, model, device) for segmenter in conjoined_segmenters]

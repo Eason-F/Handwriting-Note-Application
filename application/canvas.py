@@ -23,6 +23,7 @@ class InkCanvas(QWidget):
         self.trackpad_mode = False
         self.trackpad_screen_rect = None
         self._ignore_next_trackpad_move = False
+        self.revision = 0
         self.setMouseTracking(False)
         self.setCursor(Qt.CursorShape.CrossCursor)
 
@@ -86,6 +87,7 @@ class InkCanvas(QWidget):
             self.last_point = point
 
         painter.end()
+        self.revision += 1
         self.update()
         self.changed.emit()
 
@@ -115,6 +117,7 @@ class InkCanvas(QWidget):
 
     def clear(self):
         self.image.fill(self.background)
+        self.revision += 1
         self.update()
         self.changed.emit()
 
