@@ -33,8 +33,12 @@ class InkCanvas(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), self.background)
-        painter.drawImage(self._canvas_rect(), self.image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.fillRect(self.rect(), QColor('#22272c'))
+        canvas_rect = self._canvas_rect()
+        painter.drawImage(canvas_rect, self.image)
+        painter.setPen(QPen(QColor('#485159'), 1))
+        painter.drawRoundedRect(canvas_rect.adjusted(0.5, 0.5, -0.5, -0.5), 7, 7)
 
     def resizeEvent(self, event):
         if self.stretch_to_fill and event.size().width() > 0 and event.size().height() > 0:

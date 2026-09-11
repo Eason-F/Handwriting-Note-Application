@@ -5,17 +5,19 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, Qt, QTimer
+from PySide6.QtCore import QSize, QThreadPool, Qt, QTimer
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QTextCursor
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
-    QMessageBox, QPushButton, QSplitter, QStatusBar, QTextEdit,
+    QMessageBox, QPushButton, QSizePolicy, QSplitter, QStatusBar, QTextEdit,
     QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .calculator import MathEvaluationError, MathEvaluator
+from .editor import AdaptiveMarkdownEditor
 from .handwriting_panel import HandwritingPanel
+from .icons import outline_icon
 from .math_recognition import MathRecognizer
 from .notes import NoteDocument, NoteError, NoteManager
 from .settings import ShortcutSettingsDialog, load_shortcut
@@ -28,10 +30,10 @@ class EditorWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName('editorWidget')
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.text = QTextEdit()
-        self.text.setObjectName('editor')
+        self.text = AdaptiveMarkdownEditor()
         self.text.setPlaceholderText('Start writing…')
         self.text.setAcceptRichText(False)
         layout.addWidget(self.text)
@@ -102,6 +104,9 @@ class MainWindow(QMainWindow):
             action.triggered.connect(callback)
             self.actions[key] = action
             self.addAction(action)
+        icons = {'new': 'new', 'open': 'open', 'save': 'save', 'save_as': 'save', 'settings': 'settings'}
+        for key, icon in icons.items():
+            self.actions[key].setIcon(outline_icon(icon))
         for shortcut, callback in (
             ('Ctrl+Shift+S', self.save_as), ('Ctrl+Shift+=', self.insert_math_result),
             ('Ctrl+Z', lambda: self.editor.text.undo()), ('Ctrl+Shift+Z', lambda: self.editor.text.redo()),
@@ -113,7 +118,10 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         toolbar = QToolBar()
+        toolbar.setObjectName('mainToolbar')
         toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(17, 17))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         for key in ('new', 'open', 'save', 'save_as'):
             toolbar.addAction(self.actions[key])
         toolbar.addSeparator()
@@ -130,28 +138,52 @@ class MainWindow(QMainWindow):
         insert_result = QAction('Insert result', self)
         insert_result.triggered.connect(self.insert_math_result)
         toolbar.addAction(insert_result)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        toolbar.addWidget(spacer)
+        toolbar.addSeparator()
+        toolbar.addAction(self.actions['settings'])
         self.addToolBar(toolbar)
 
         self.sidebar = QWidget()
+        self.sidebar.setObjectName('sidebar')
         side_layout = QVBoxLayout(self.sidebar)
-        side_layout.setContentsMargins(9, 10, 9, 10)
+        side_layout.setContentsMargins(14, 16, 14, 14)
+        side_layout.setSpacing(10)
         heading = QLabel('INKNOTE LIBRARY')
         heading.setObjectName('appTitle')
         side_layout.addWidget(heading)
         self.search = QTextEdit()
+        self.search.setObjectName('searchInput')
         self.search.setPlaceholderText('Filter notes…')
         self.search.setFixedHeight(38)
         self.search.textChanged.connect(self._filter_tree)
         side_layout.addWidget(self.search)
         self.tree = QTreeWidget()
+        self.tree.setObjectName('noteTree')
         self.tree.setHeaderHidden(True)
+        self.tree.setRootIsDecorated(False)
+        self.tree.setIndentation(16)
+        self.tree.setIconSize(QSize(17, 17))
+        self.tree.setUniformRowHeights(True)
+        self.tree.setAnimated(True)
         self.tree.itemDoubleClicked.connect(lambda item, _column: self._activate_item(item))
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._tree_menu)
         side_layout.addWidget(self.tree, 1)
         buttons = QHBoxLayout()
-        for text, callback in (('+ Note', self.new_note), ('+ Folder', self.new_folder), ('↻', self.refresh)):
+        buttons.setSpacing(7)
+        for text, callback in (('New note', self.new_note), ('New folder', self.new_folder), ('', self.refresh)):
             button = QPushButton(text)
+            if text == 'New note':
+                button.setObjectName('primary')
+                button.setIcon(outline_icon('new', '#142119'))
+            elif text == 'New folder':
+                button.setIcon(outline_icon('folder'))
+            else:
+                button.setObjectName('compactButton')
+                button.setToolTip('Refresh note library')
+                button.setIcon(outline_icon('refresh'))
             button.clicked.connect(callback)
             buttons.addWidget(button)
         side_layout.addLayout(buttons)
@@ -167,6 +199,7 @@ class MainWindow(QMainWindow):
         self.handwriting_panel.cleared.connect(self._clear_math_expression)
 
         editor_container = QWidget()
+        editor_container.setObjectName('editorArea')
         editor_layout = QVBoxLayout(editor_container)
         editor_layout.setContentsMargins(0, 0, 0, 0)
         editor_layout.setSpacing(0)
@@ -180,13 +213,18 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.sidebar)
         splitter.addWidget(editor_container)
-        splitter.setSizes([245, 1175])
+        splitter.setSizes([260, 1160])
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
         splitter.setStretchFactor(1, 1)
         self.setCentralWidget(splitter)
         status = QStatusBar()
         self.status_label = QLabel('Ready')
+        self.status_label.setObjectName('statusText')
         self.math_result = QLabel('')
+        self.math_result.setObjectName('mathResult')
         self.word_count_label = QLabel('0 words')
+        self.word_count_label.setObjectName('wordCount')
         status.addWidget(self.status_label, 1)
         status.addPermanentWidget(self.math_result)
         status.addPermanentWidget(self.word_count_label)
@@ -195,19 +233,18 @@ class MainWindow(QMainWindow):
 
     def _load_tree(self):
         self.tree.clear()
-        root = QTreeWidgetItem(['Notes'])
-        root.setData(0, Qt.ItemDataRole.UserRole, str(self.manager.root))
-        self.tree.addTopLevelItem(root)
+        root = self.tree.invisibleRootItem()
         self._populate_tree(root, self.manager.root)
-        root.setExpanded(True)
 
     def _populate_tree(self, parent, folder):
         for path in self.manager.list_entries(folder):
             item = QTreeWidgetItem([path.stem if path.is_file() else path.name])
             item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+            item.setIcon(0, outline_icon('folder' if path.is_dir() else 'file'))
             parent.addChild(item)
             if path.is_dir():
                 self._populate_tree(item, path)
+                item.setExpanded(True)
 
     def _selected_path(self):
         item = self.tree.currentItem()
@@ -233,15 +270,13 @@ class MainWindow(QMainWindow):
 
     def _filter_tree(self):
         query = self.search.toPlainText().strip().casefold()
-        root = self.tree.topLevelItem(0)
-        if not root:
-            return
         def visit(item):
             child_match = any(visit(item.child(i)) for i in range(item.childCount()))
             match = not query or query in item.text(0).casefold() or child_match
             item.setHidden(not match)
             return match
-        visit(root)
+        for index in range(self.tree.topLevelItemCount()):
+            visit(self.tree.topLevelItem(index))
 
     def _tree_menu(self, position):
         item = self.tree.itemAt(position)
@@ -484,6 +519,8 @@ class MainWindow(QMainWindow):
 
     def _writing_done(self, result, panel, canvas, info, automatic, revision):
         self._recognition_running = False
+        if hasattr(panel, 'set_busy'):
+            panel.set_busy(False)
         if canvas.revision != revision:
             info.setPlainText('The ink changed during recognition. Run recognition again.')
             panel_widget = getattr(self, 'handwriting_panel', None)
@@ -516,8 +553,7 @@ class MainWindow(QMainWindow):
         if not candidates:
             return
         prediction, confidence = candidates[0]
-        token = self.math_recognizer.replacements.get(prediction, prediction)
-        token = token.replace('\\', '').replace('{}', '').strip()
+        token = self.math_recognizer.display_token(prediction)
         self.math_expression += token
         self.handwriting_panel.preview.setPlainText(f'{self.math_expression}   ·   last symbol {confidence:.0%}')
         self.status_label.setText(f'Expression: {self.math_expression}')
@@ -536,13 +572,22 @@ class MainWindow(QMainWindow):
 
     def _writing_error(self, error, panel, canvas, info, automatic, revision):
         self._recognition_running = False
+        if hasattr(panel, 'set_busy'):
+            panel.set_busy(False)
         info.setReadOnly(False)
         info.setPlainText(f'Recognition failed: {error}')
         self.status_label.setText('Recognition failed')
 
     def _insert_text_at_cursor(self, text):
+        text = str(text).replace('\r\n', '\n').replace('\r', '\n').replace('\u2028', '\n').replace('\u2029', '\n')
         cursor = self.editor.text.textCursor()
-        cursor.insertText(text)
+        if cursor.hasSelection():
+            cursor.removeSelectedText()
+        lines = text.split('\n')
+        cursor.insertText(lines[0])
+        for line in lines[1:]:
+            cursor.insertBlock()
+            cursor.insertText(line)
         self.editor.text.setTextCursor(cursor)
         self.editor.text.setFocus()
 

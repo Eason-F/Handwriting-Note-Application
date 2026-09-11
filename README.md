@@ -89,6 +89,8 @@ Click the **Text** mode button so that it changes to **Math**. The canvas become
 
 The math recogniser intentionally remains a single-symbol CNN. Expression assembly is handled by the application instead of asking the CNN to segment a complete equation.
 
+Greek predictions are displayed and inserted as their actual glyphs, including `π`, `α`, `β`, `γ`, `δ`, `θ`, `ε`, and `λ`. Exact irrational results retain their symbolic form and include a rounded value beside it, such as `sqrt(2) [≈ 1.41421]`.
+
 ## Evaluating mathematics
 
 Select an expression in the editor or place the cursor on its line, then choose **Evaluate**. InkNote writes the answer into the document, for example:

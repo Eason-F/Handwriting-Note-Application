@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from application.calculator import MathEvaluationError, MathEvaluator
+from application.math_recognition import MathRecognizer
 from application.notes import NoteDocument, NoteError, NoteManager
 
 
@@ -33,6 +34,15 @@ class MathEvaluatorTests(unittest.TestCase):
         self.assertEqual(evaluator.evaluate('5x = 10 x=?').result, 'x = 2')
         evaluator.evaluate('x = 99')
         self.assertEqual(evaluator.evaluate('5x = 10 x=?').result, 'x = 2')
+
+    def test_greek_predictions_render_as_symbols(self):
+        self.assertEqual(MathRecognizer.display_token(r'\pi'), 'π')
+        self.assertEqual(MathRecognizer.display_token(r'\alpha'), 'α')
+        self.assertEqual(MathRecognizer.display_token(r'\lambda'), 'λ')
+
+    def test_irrational_results_include_a_rounded_value(self):
+        result = MathEvaluator().evaluate('sqrt(2)').result
+        self.assertEqual(result, 'sqrt(2) [≈ 1.41421]')
 
 
 class NoteManagerTests(unittest.TestCase):

@@ -90,8 +90,11 @@ class MathEvaluator:
     @staticmethod
     def format_result(value):
         if isinstance(value, (list, tuple, set)):
-            return '[' + ', '.join(sympy.sstr(item) for item in value) + ']'
-        return sympy.sstr(value)
+            return '[' + ', '.join(MathEvaluator.format_result(item) for item in value) + ']'
+        exact = sympy.sstr(value)
+        if isinstance(value, sympy.Basic) and not value.free_symbols and value.is_real is True and value.is_number and value.is_Rational is not True and not isinstance(value, sympy.Float):
+            return f'{exact} [≈ {float(sympy.N(value, 7)):.6g}]'
+        return exact
 
     @staticmethod
     def extract(text: str):

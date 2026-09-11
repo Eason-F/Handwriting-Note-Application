@@ -27,16 +27,29 @@ class MathResult:
 
 class MathRecognizer:
     replacements = {
-        r'\\times': '*',
-        r'\\ast': '*',
-        r'\\div': '/',
-        r'\\cdot': '*',
-        r'\\minus': '-',
-        r'\\plus': '+',
-        r'\\%': '%',
-        r'\\equiv': '=',
-        r'\\sqrt\{\}': 'sqrt',
+        r'\pi': 'π',
+        r'\alpha': 'α',
+        r'\beta': 'β',
+        r'\gamma': 'γ',
+        r'\delta': 'δ',
+        r'\theta': 'θ',
+        r'\epsilon': 'ε',
+        r'\lambda': 'λ',
+        r'\times': '×',
+        r'\ast': '×',
+        r'\div': '÷',
+        r'\cdot': '×',
+        r'\minus': '−',
+        r'\plus': '+',
+        r'\%': '%',
+        r'\equiv': '=',
+        r'\sqrt\{\}': '√',
     }
+
+    @classmethod
+    def display_token(cls, prediction):
+        token = cls.replacements.get(prediction, prediction)
+        return token.replace('\\', '').replace('{}', '').strip()
 
     def __init__(self):
         device_name = 'mps' if torch and torch.backends.mps.is_available() else 'cpu'
@@ -159,10 +172,8 @@ class MathRecognizer:
     def recognize(self, image):
         started = time.perf_counter()
         candidates = self.predict_symbols(image, top_k=3)
-        tokens = [candidate[0][0] if candidate else '' for candidate in candidates]
+        tokens = [self.display_token(candidate[0][0]) if candidate else '' for candidate in candidates]
         expression = ''.join(tokens)
-        for source, target in self.replacements.items():
-            expression = expression.replace(source, target)
         expression = expression.replace('{', '(').replace('}', ')')
         expression = re.sub(r'\\[a-zA-Z]+', '', expression)
         expression = expression.replace(' ', '')

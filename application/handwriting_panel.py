@@ -18,10 +18,11 @@ class HandwritingPanel(QFrame):
         self.setMinimumHeight(220)
         self.mode = 'text'
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 10)
-        layout.setSpacing(7)
+        layout.setContentsMargins(16, 11, 16, 14)
+        layout.setSpacing(10)
 
         controls = QHBoxLayout()
+        controls.setSpacing(8)
         title = QLabel('HANDWRITING INPUT')
         title.setObjectName('sectionTitle')
         controls.addWidget(title)
@@ -54,6 +55,7 @@ class HandwritingPanel(QFrame):
         self.canvas = InkCanvas(pen_width=5, min_size=(640, 145), logical_size=(1400, 420))
         layout.addWidget(self.canvas, 1, Qt.AlignmentFlag.AlignHCenter)
         self.preview = QTextEdit()
+        self.preview.setObjectName('recognitionPreview')
         self.preview.setPlaceholderText('Recognition preview appears here. You can correct it before inserting.')
         self.preview.setFixedHeight(54)
         layout.addWidget(self.preview)
@@ -76,6 +78,9 @@ class HandwritingPanel(QFrame):
             self.canvas.reset_trackpad_pointer()
 
     def set_busy(self, busy):
+        self.setProperty('busy', busy)
+        self.style().unpolish(self)
+        self.style().polish(self)
         self.preview.setReadOnly(busy)
         if busy:
             self.preview.setPlainText('Segmenting and recognising…')
@@ -86,12 +91,14 @@ class HandwritingPanel(QFrame):
         self.canvas.clear()
         self.auto_timer.stop()
         if mode == 'math':
+            self.layout().setAlignment(self.canvas, Qt.AlignmentFlag.AlignHCenter)
             self.canvas.set_stretch_to_fill(False)
             self.canvas.set_logical_size((520, 520))
             self.canvas.setMinimumWidth(220)
             self.canvas.setMaximumWidth(300)
             self.preview.setPlaceholderText('Draw one mathematical symbol. Recognition starts after a short pause.')
         else:
+            self.layout().setAlignment(self.canvas, Qt.AlignmentFlag(0))
             self.canvas.set_logical_size((1400, 700))
             self.canvas.set_stretch_to_fill(True)
             self.canvas.setMinimumWidth(500)
