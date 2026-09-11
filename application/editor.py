@@ -43,6 +43,7 @@ class AdaptiveMarkdownEditor(QScrollArea):
         self._sections = ['']
         self._active_index = 0
         self._active_editor = None
+        self._preview_mode = False
         self._placeholder = 'Start writing…'
 
         self.content = QWidget()
@@ -83,29 +84,58 @@ class AdaptiveMarkdownEditor(QScrollArea):
         pass
 
     def textCursor(self):
+        if self._active_editor is None:
+            self.set_preview(False)
         return self._active_editor.textCursor()
 
     def setTextCursor(self, cursor):
+        if self._active_editor is None:
+            self.set_preview(False)
         if cursor.document() == self._active_editor.document():
             self._active_editor.setTextCursor(cursor)
 
     def setFocus(self, reason=Qt.FocusReason.OtherFocusReason):
+        if self._active_editor is None:
+            self.set_preview(False)
         self._active_editor.setFocus(reason)
 
     def undo(self):
+        if self._active_editor is None:
+            self.set_preview(False)
         self._active_editor.undo()
 
     def redo(self):
+        if self._active_editor is None:
+            self.set_preview(False)
         self._active_editor.redo()
 
     def document(self):
+        if self._active_editor is None:
+            self.set_preview(False)
         return self._active_editor.document()
+
+    def set_preview(self, enabled):
+        enabled = bool(enabled)
+        if enabled == self._preview_mode:
+            return
+        self._commit_active()
+        self._preview_mode = enabled
+        self._rebuild()
+
+    def is_preview(self):
+        return self._preview_mode
 
     def _commit_active(self):
         if self._active_editor is not None:
             self._sections[self._active_index] = self._active_editor.toPlainText()
 
     def _activate(self, index):
+        if self._preview_mode:
+            self._preview_mode = False
+            self._active_index = index
+            self._rebuild()
+            self._active_editor.setFocus()
+            return
         if index == self._active_index:
             self._active_editor.setFocus()
             return
@@ -132,13 +162,14 @@ class AdaptiveMarkdownEditor(QScrollArea):
     def _rebuild(self):
         while self.sections_layout.count() > 1:
             item = self.sections_layout.takeAt(0)
-            if item.widget():
-                item.widget().hide()
-                item.widget().setParent(None)
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         self._active_editor = None
         for index, source in enumerate(self._sections):
-            if index == self._active_index:
+            if index == self._active_index and not self._preview_mode:
                 editor = QTextEdit()
                 editor.setObjectName('activeMarkdownSection')
                 editor.setAcceptRichText(False)

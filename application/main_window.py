@@ -133,6 +133,11 @@ class MainWindow(QMainWindow):
         self.panel_mode_button.setCheckable(True)
         self.panel_mode_button.clicked.connect(self.toggle_handwriting_panel)
         toolbar.addWidget(self.panel_mode_button)
+        self.preview_button = QPushButton('Preview')
+        self.preview_button.setCheckable(True)
+        self.preview_button.setToolTip('Render the entire Markdown note')
+        self.preview_button.clicked.connect(self.toggle_preview)
+        toolbar.addWidget(self.preview_button)
         toolbar.addSeparator()
         toolbar.addAction(self.actions['calculate'])
         insert_result = QAction('Insert result', self)
@@ -467,6 +472,12 @@ class MainWindow(QMainWindow):
         state = 'ready' if model.ready else 'unavailable'
         self.status_label.setText(f'{self.input_mode.title()} mode · recogniser {state}')
 
+    def toggle_preview(self, enabled=None):
+        enabled = self.preview_button.isChecked() if enabled is None else bool(enabled)
+        self.editor.text.set_preview(enabled)
+        self.preview_button.setChecked(enabled)
+        self.status_label.setText('Full Markdown preview' if enabled else 'Adaptive Markdown editing')
+
     def _text_changed(self):
         if self.document:
             self.document.text = self.editor.text.toPlainText()
@@ -579,6 +590,8 @@ class MainWindow(QMainWindow):
         self.status_label.setText('Recognition failed')
 
     def _insert_text_at_cursor(self, text):
+        if self.editor.text.is_preview():
+            self.toggle_preview(False)
         text = str(text).replace('\r\n', '\n').replace('\r', '\n').replace('\u2028', '\n').replace('\u2029', '\n')
         cursor = self.editor.text.textCursor()
         if cursor.hasSelection():
@@ -617,6 +630,8 @@ class MainWindow(QMainWindow):
         self.status_label.setText('Handwriting image inserted into note')
 
     def _expression_at_cursor(self):
+        if self.editor.text.is_preview():
+            self.toggle_preview(False)
         cursor = self.editor.text.textCursor()
         if cursor.hasSelection():
             return cursor.selectedText().replace('\u2029', '\n').strip()

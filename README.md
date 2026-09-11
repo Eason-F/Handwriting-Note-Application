@@ -112,6 +112,8 @@ Use the buttons below the sidebar to create notes and folders or refresh the lib
 
 InkNote autosaves changed documents. It also checks for unsaved changes before switching notes or closing, so a failed save or cancelled prompt does not silently discard work.
 
+Use **Preview** in the top toolbar to render the complete Markdown note. Turn Preview off to return to adaptive editing, where the focused heading section is raw Markdown and the remaining sections stay rendered. Clicking any section in full Preview opens that section directly for editing.
+
 Common shortcuts include:
 
 - `Ctrl+N`: new note
