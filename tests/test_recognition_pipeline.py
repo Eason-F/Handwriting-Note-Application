@@ -49,6 +49,17 @@ class InkCroppingTests(unittest.TestCase):
 
 
 class ScaleAdaptiveSegmentationTests(unittest.TestCase):
+    def test_detached_capital_top_bar_is_not_treated_as_a_line(self):
+        page = np.zeros((72, 90), dtype=bool)
+        page[4:7, 5:32] = True
+        page[14:39, 18:21] = True
+        page[22:39, 28:76] = True
+        page[55:68, 10:76] = True
+
+        regions = LineSegmenter().find_regions(page)
+
+        self.assertEqual(regions, [(4, 39), (55, 68)])
+
     def test_sparse_tall_strokes_remain_in_their_line(self):
         page = np.zeros((65, 80), dtype=bool)
         page[5:7, 5:14] = True

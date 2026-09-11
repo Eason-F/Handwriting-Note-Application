@@ -31,6 +31,8 @@ class LineSegmenter:
         if not core_regions:
             return self._find_active_regions(projection > 0, maximum_gap, 1)
 
+        core_regions = self._merge_short_fragments(binary, core_regions)
+
         # Dense rows locate distinct line bodies. Each body then owns half of
         # the space to its neighbours, allowing sparse ascenders, descenders,
         # and dots to be restored without joining two lines.
@@ -44,6 +46,62 @@ class LineSegmenter:
                 regions.append((top + int(ink_rows[0]), top + int(ink_rows[-1]) + 1))
 
         return regions
+
+    @staticmethod
+    def _merge_short_fragments(binary, regions):
+        if len(regions) < 2:
+            return regions
+
+        regions = list(regions)
+
+        while len(regions) > 1:
+            heights = np.asarray([end - start for start, end in regions], dtype=float)
+            normal_height = float(np.percentile(heights, 75))
+            fragment_limit = max(2.0, normal_height * 0.45)
+            merged = False
+
+            for index, region in enumerate(regions):
+                if region[1] - region[0] >= fragment_limit:
+                    continue
+
+                neighbours = [candidate for candidate in (index - 1, index + 1) if 0 <= candidate < len(regions)]
+                neighbours.sort(key=lambda candidate: LineSegmenter._vertical_gap(region, regions[candidate]))
+
+                for neighbour in neighbours:
+                    target = regions[neighbour]
+                    if LineSegmenter._vertical_gap(region, target) > normal_height:
+                        continue
+                    if not LineSegmenter._horizontally_overlap(binary, region, target):
+                        continue
+
+                    regions[neighbour] = (min(region[0], target[0]), max(region[1], target[1]))
+                    regions.pop(index)
+                    regions.sort()
+                    merged = True
+                    break
+
+                if merged:
+                    break
+
+            if not merged:
+                break
+
+        return regions
+
+    @staticmethod
+    def _vertical_gap(first, second):
+        return max(0, max(first[0], second[0]) - min(first[1], second[1]))
+
+    @staticmethod
+    def _horizontally_overlap(binary, first, second):
+        spans = []
+        for start, end in (first, second):
+            columns = np.flatnonzero(np.any(binary[start:end], axis=0))
+            if not len(columns):
+                return False
+            spans.append((int(columns[0]), int(columns[-1]) + 1))
+
+        return max(spans[0][0], spans[1][0]) < min(spans[0][1], spans[1][1])
 
     @staticmethod
     def _find_active_regions(active, maximum_gap, minimum_height):
