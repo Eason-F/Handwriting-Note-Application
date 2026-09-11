@@ -38,11 +38,11 @@ def add_data(command, relative, destination=None, required=False):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Build InkNote as a macOS .app with PyInstaller.")
+    parser = argparse.ArgumentParser(description="Build and optionally archive a shareable InkNote desktop application.")
     parser.add_argument("--target-arch", choices=("arm64", "x86_64", "universal2"), default=None)
     parser.add_argument("--debug", action="store_true", help="Also build a console executable for crash diagnostics.")
     parser.add_argument("--sign", metavar="IDENTITY", help="Code-sign the resulting .app.")
-    parser.add_argument("--zip", action="store_true", help="Create dist/InkNote-macOS.zip.")
+    parser.add_argument("--zip", action="store_true", help="Create a platform-specific ZIP in dist/.")
     parser.add_argument("--no-clean", action="store_true", help="Keep existing build/dist directories.")
     return parser.parse_args()
 
@@ -97,16 +97,12 @@ def base_command(architecture):
         "InkNote",
         "--paths",
         str(ROOT),
-        "--target-architecture",
-        architecture,
         "--exclude-module",
         "PyQt5",
         "--exclude-module",
         "PyQt6",
-        "--collect-all",
-        "writing_cnn",
-        "--collect-all",
-        "math_cnn",
+        "--collect-data",
+        "wordfreq",
         "--hidden-import",
         "writing_cnn.data",
         "--hidden-import",
@@ -123,26 +119,33 @@ def base_command(architecture):
         "sympy",
         "--hidden-import",
         "PIL._imaging",
+        "--exclude-module",
+        "tensorflow",
+        "--exclude-module",
+        "tensorflow_datasets",
+        "--exclude-module",
+        "array_record",
         "main.py",
     ]
 
+    if sys.platform == "darwin":
+        command[8:8] = ["--target-architecture", architecture]
+
     add_data(command, "checkpoints", "checkpoints", required=True)
     add_data(command, "assets", "assets")
-    add_data(command, "writing_cnn/data", "writing_cnn/data")
-    add_data(command, "math_cnn/data", "math_cnn/data")
     return command
 
 
 def build_app(architecture):
     command = base_command(architecture)
     run(command)
-    app = DIST / "InkNote.app"
-    if not app.exists():
+    artifact = DIST / "InkNote.app" if sys.platform == "darwin" else DIST / "InkNote" / ("InkNote.exe" if sys.platform == "win32" else "InkNote")
+    if not artifact.exists():
         raise SystemExit(
-            f"PyInstaller completed, but the expected macOS app bundle was not found: {app}\n"
+            f"PyInstaller completed, but the expected application was not found: {artifact}\n"
             f"Contents of dist:\n{chr(10).join(str(p.name) for p in DIST.iterdir()) if DIST.exists() else '(dist missing)'}"
         )
-    return app
+    return artifact
 
 
 def build_debug(architecture):
@@ -165,16 +168,12 @@ def build_debug(architecture):
         str(ROOT / "build_debug"),
         "--paths",
         str(ROOT),
-        "--target-architecture",
-        architecture,
         "--exclude-module",
         "PyQt5",
         "--exclude-module",
         "PyQt6",
-        "--collect-all",
-        "writing_cnn",
-        "--collect-all",
-        "math_cnn",
+        "--collect-data",
+        "wordfreq",
         "--hidden-import",
         "writing_cnn.data",
         "--hidden-import",
@@ -191,14 +190,21 @@ def build_debug(architecture):
         "sympy",
         "--hidden-import",
         "PIL._imaging",
+        "--exclude-module",
+        "tensorflow",
+        "--exclude-module",
+        "tensorflow_datasets",
+        "--exclude-module",
+        "array_record",
         "main.py",
     ]
+    if sys.platform == "darwin":
+        command[8:8] = ["--target-architecture", architecture]
     add_data(command, "checkpoints", "checkpoints", required=True)
     add_data(command, "assets", "assets")
-    add_data(command, "writing_cnn/data", "writing_cnn/data")
-    add_data(command, "math_cnn/data", "math_cnn/data")
     run(command)
-    debug_exe = debug_root / "InkNote-debug" / "InkNote-debug"
+    executable = "InkNote-debug.exe" if sys.platform == "win32" else "InkNote-debug"
+    debug_exe = debug_root / "InkNote-debug" / executable
     if not debug_exe.exists():
         raise SystemExit(f"Debug executable was not created: {debug_exe}")
     return debug_exe
@@ -206,8 +212,6 @@ def build_debug(architecture):
 
 def main():
     args = parse_args()
-    if sys.platform != "darwin":
-        raise SystemExit("This compiler must be run on macOS.")
 
     require_path("main.py", "main.py")
     require_path("writing_cnn", "writing_cnn package")
@@ -231,17 +235,21 @@ def main():
         debug_exe = build_debug(architecture)
         print(f"Built debug executable: {debug_exe}")
 
+    if args.sign and sys.platform != "darwin":
+        raise SystemExit("--sign is only available for macOS builds.")
     if args.sign:
         run(["codesign", "--deep", "--force", "--verbose", "--sign", args.sign, str(app)])
 
     if args.zip:
-        archive_base = DIST / "InkNote-macOS"
-        zip_path = shutil.make_archive(str(archive_base), "zip", DIST, "InkNote.app")
+        platform_name = {"darwin": "macOS", "win32": "Windows"}.get(sys.platform, "Linux")
+        archive_base = DIST / f"InkNote-{platform_name}"
+        bundle_name = "InkNote.app" if sys.platform == "darwin" else "InkNote"
+        zip_path = shutil.make_archive(str(archive_base), "zip", DIST, bundle_name)
         print(f"ZIP: {zip_path}")
 
     print()
     print(f"App:   {app}")
-    print(f"Run:   open {app}")
+    print(f"Run:   {'open ' if sys.platform == 'darwin' else ''}{app}")
     if args.debug:
         print("Debug executable:")
         print(f"  {debug_exe}")

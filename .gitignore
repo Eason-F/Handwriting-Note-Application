@@ -1,4 +1,5 @@
 .venv/
+.package-venv/
 __pycache__/
 *.py[cod]
 .DS_Store
@@ -7,5 +8,5 @@ test_results/
 notes/
 build/
 dist/
-
+*.spec
 

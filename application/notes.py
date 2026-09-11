@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,7 +34,9 @@ class NoteManager:
 
     INVALID_NAMES = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
-    def __init__(self, root: str | Path = 'notes'):
+    def __init__(self, root: str | Path | None = None):
+        if root is None:
+            root = Path.home() / 'Documents' / 'InkNote Notes' if getattr(sys, 'frozen', False) else Path.cwd() / 'notes'
         self.root = Path(root).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.handwriting = self.root / '.handwriting'

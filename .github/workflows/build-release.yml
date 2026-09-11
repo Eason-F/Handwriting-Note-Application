@@ -1,0 +1,37 @@
+name: Build shareable applications
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            artifact: InkNote-macOS
+            archive: dist/InkNote-macOS.zip
+          - os: windows-latest
+            artifact: InkNote-Windows
+            archive: dist/InkNote-Windows.zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install application build dependencies
+        run: python -m pip install -r requirements-app.txt
+      - name: Build application archive
+        run: python build_app.py --zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          compression-level: 0

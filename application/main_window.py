@@ -51,7 +51,7 @@ class MainWindow(QMainWindow):
         self.resize(1420, 900)
         self.setMinimumSize(1050, 680)
         self.setStyleSheet(STYLESHEET)
-        self.manager = NoteManager('notes')
+        self.manager = NoteManager()
         self.store = self.manager
         self.document: NoteDocument | None = None
         self.current_note: Path | None = None

@@ -44,7 +44,67 @@ From the repository root, run:
 python main.py
 ```
 
-Notes are stored in the repository's `notes` directory by default. Handwriting images inserted into notes are stored in `notes/.handwriting`.
+When running from source, notes are stored in the repository's `notes` directory by default. A packaged application stores notes in `Documents/InkNote Notes`, which remains writable and is not lost when the application is replaced. Handwriting images are kept in the note library's hidden `.handwriting` folder.
+
+## Building and sharing the application
+
+InkNote can be distributed as a self-contained macOS or Windows application. The recipient does not need Python or the repository because PyInstaller bundles the Python runtime, required libraries, handwriting models, and checkpoints used by the application.
+
+### Single-command build
+
+With Python installed, run this one command from the repository root on either macOS or Windows:
+
+```bash
+python package_app.py
+```
+
+It creates an isolated `.package-venv`, installs the required build dependencies, compiles InkNote, and creates the platform-specific ZIP in `dist`. Internet access is required the first time so the dependencies can be downloaded. Later runs reuse the packaging environment.
+
+The manual steps below provide the same build with more control.
+
+Create a clean packaging environment and install only the runtime/build dependencies:
+
+```bash
+python3 -m venv .package-venv
+source .package-venv/bin/activate
+python -m pip install -r requirements-app.txt
+```
+
+Build the application and a shareable ZIP:
+
+```bash
+python build_app.py --zip
+```
+
+On macOS the outputs are:
+
+```text
+dist/InkNote.app
+dist/InkNote-macOS.zip
+```
+
+Send `InkNote-macOS.zip` to another Mac user. They should extract it and move `InkNote.app` to Applications. Because an unsigned local build is not notarised by Apple, macOS may initially block it. The recipient can Control-click the app, choose **Open**, and confirm **Open**. For public distribution, build with an Apple Developer ID and pass its identity to the builder:
+
+```bash
+python build_app.py --zip --sign "Developer ID Application: Your Name (TEAMID)"
+```
+
+On Windows, run the same setup and build commands in PowerShell. The output is:
+
+```text
+dist\InkNote\InkNote.exe
+dist\InkNote-Windows.zip
+```
+
+Send `InkNote-Windows.zip`; the recipient extracts the whole folder and launches `InkNote.exe`. The executable must remain beside its `_internal` directory.
+
+PyInstaller does not cross-compile. The macOS `.app` must be built on macOS, while the Windows `.exe` must be built on Windows. The macOS builder defaults to the current architecture; `--target-arch arm64` and `--target-arch x86_64` are available when the installed Python and libraries support that target.
+
+### Automatic Windows and macOS builds
+
+The repository includes `.github/workflows/build-release.yml`. On GitHub, open **Actions → Build shareable applications → Run workflow**. When it finishes, download the `InkNote-macOS` or `InkNote-Windows` artifact. Pushing a tag beginning with `v`, such as `v1.0.0`, also runs both builds automatically.
+
+Do not share the `.venv`, `data`, `build`, or source-training datasets. They are not needed by the packaged application.
 
 ## Working with notes
 
