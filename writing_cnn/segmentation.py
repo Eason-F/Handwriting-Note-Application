@@ -17,13 +17,36 @@ class LineSegmenter:
 
     def find_regions(self, binary):
         projection = np.sum(binary, axis=1)
-        image_height, _ = binary.shape
-        nonzero_projection = projection[projection > 0]
-        estimated_row_ink = np.percentile(nonzero_projection, 30) if len(nonzero_projection) else 0
-        minimum_ink = min(self.min_ink_pixels, max(2, round(float(estimated_row_ink))))
+        nonzero = projection[projection > 0]
+
+        if not len(nonzero):
+            return []
+
+        image_height = binary.shape[0]
+        minimum_ink = min(self.min_ink_pixels, max(2, round(float(np.percentile(nonzero, 30)))))
         maximum_gap = max(self.max_internal_gap, round(image_height * 0.005))
         minimum_height = min(self.min_line_height, max(2, round(image_height * 0.05)))
-        active = projection >= minimum_ink
+        core_regions = self._find_active_regions(projection >= minimum_ink, maximum_gap, minimum_height)
+
+        if not core_regions:
+            return self._find_active_regions(projection > 0, maximum_gap, 1)
+
+        # Dense rows locate distinct line bodies. Each body then owns half of
+        # the space to its neighbours, allowing sparse ascenders, descenders,
+        # and dots to be restored without joining two lines.
+        regions = []
+        for index, (start, end) in enumerate(core_regions):
+            top = 0 if index == 0 else (core_regions[index - 1][1] + start + 1) // 2
+            bottom = image_height if index + 1 == len(core_regions) else (end + core_regions[index + 1][0] + 1) // 2
+            ink_rows = np.flatnonzero(projection[top:bottom] > 0)
+
+            if len(ink_rows):
+                regions.append((top + int(ink_rows[0]), top + int(ink_rows[-1]) + 1))
+
+        return regions
+
+    @staticmethod
+    def _find_active_regions(active, maximum_gap, minimum_height):
         regions, start, gap = [], None, 0
 
         for y, ink in enumerate(active):

@@ -49,6 +49,27 @@ class InkCroppingTests(unittest.TestCase):
 
 
 class ScaleAdaptiveSegmentationTests(unittest.TestCase):
+    def test_sparse_tall_strokes_remain_in_their_line(self):
+        page = np.zeros((65, 80), dtype=bool)
+        page[5:7, 5:14] = True
+        page[5:36, 9] = True
+        page[14:25, 10:70] = True
+        page[46:58, 10:70] = True
+
+        regions = LineSegmenter().find_regions(page)
+
+        self.assertEqual(regions, [(5, 36), (46, 58)])
+
+    def test_detached_dot_is_joined_to_the_nearby_text_line(self):
+        page = np.zeros((65, 80), dtype=bool)
+        page[8:10, 18:20] = True
+        page[14:25, 10:70] = True
+        page[46:58, 10:70] = True
+
+        regions = LineSegmenter().find_regions(page)
+
+        self.assertEqual(regions, [(8, 25), (46, 58)])
+
     def test_resolution_normalization_matches_replicated_ink(self):
         page = np.zeros((80, 180), dtype=bool)
         for left, height in ((10, 20), (35, 28), (60, 24), (95, 18)):
