@@ -23,6 +23,7 @@ STYLESHEET = f'''
 QMainWindow, QWidget {{ background: {DARK}; color: {TEXT}; }}
 QFrame#sidePanel, QDockWidget {{ background: {PANEL}; border: 0; }}
 QFrame#editorPanel {{ background: {EDITOR}; }}
+QFrame#handwritingPanel {{ background: {PANEL}; border-top: 1px solid {BORDER}; }}
 QFrame#rightPanel {{ background: {PANEL}; }}
 QLabel#appTitle {{ color: {WHITE}; font-size: 15px; font-weight: 700; padding: 5px 8px; }}
 QLabel#sectionTitle {{ color: {MUTED}; font-size: 10px; font-weight: 700; padding: 8px 8px 4px; letter-spacing: 1px; }}

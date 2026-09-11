@@ -16,6 +16,7 @@ DEFAULT_SHORTCUTS = {
     'new': 'Ctrl+N',
     'open': 'Ctrl+O',
     'save': 'Ctrl+S',
+    'save_as': 'Ctrl+Shift+S',
     'close': 'Ctrl+W',
     'search': 'Ctrl+F',
     'handwriting': 'Ctrl+Shift+H',

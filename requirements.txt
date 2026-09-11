@@ -7,3 +7,4 @@ tensorflow>=2.20
 array-record>=0.8
 importlib-resources>=6.5
 wordfreq>=3.1
+sympy>=1.13

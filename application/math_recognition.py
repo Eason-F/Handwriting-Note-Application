@@ -11,7 +11,7 @@ try:
 except ImportError:
     torch = None
 
-from math_cnn.images import prepare_symbol_image
+from math_cnn.images import prepare_symbol_image, crop_and_center_drawing
 from math_cnn.model import SymbolCNN
 
 from .theme import MATH_CHECKPOINT_PATH
@@ -129,13 +129,9 @@ class MathRecognizer:
     def predict_single(self, image, top_k=3):
         if not self.ready:
             raise RuntimeError(f'Math model unavailable: {self.error or "unknown error"}')
-        grayscale = image.convert('L')
-        bbox = ImageOps.invert(grayscale).getbbox()
-        if bbox is None:
-            return []
-        symbol = grayscale.crop(bbox)
+        image = crop_and_center_drawing(image)
         with torch.inference_mode():
-            tensor = prepare_symbol_image(symbol).unsqueeze(0).to(self.device)
+            tensor = prepare_symbol_image(image).unsqueeze(0).to(self.device)
             probs = self.model(tensor).softmax(dim=1)[0]
             values, indexes = probs.topk(top_k)
         return [

@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import torch
+import time
 from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import ConcatDataset, DataLoader
@@ -49,7 +50,7 @@ def parse_args():
     parser.add_argument('--batch-size', type=int, default=192)
     parser.add_argument('--learning-rate', type=float, default=8e-5)
     parser.add_argument('--context-samples', type=int, default=23200)
-    parser.add_argument('--workers', type=int, default=0)
+    parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--device', default='auto')
     return parser.parse_args()
 
@@ -74,8 +75,16 @@ def main():
     optimizer = AdamW(model.parameters(), lr=args.learning_rate, weight_decay=1e-4)
     loss_function = nn.CrossEntropyLoss()
     best_case_folded = 0.0
+    
+    print(f"Device: {device}")
+    print(f"Training samples: {len(training):,}")
+    print(f"Test samples: {len(validation):,}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Workers: {args.workers}")
+    print(f"Learning rate: {args.learning_rate}")
 
     for epoch in range(1, args.epochs + 1):
+        started = time.perf_counter()
         model.train()
         loss_total = samples = 0
         for images, targets in train_loader:
@@ -91,6 +100,7 @@ def main():
         print(
             f'Epoch {epoch}/{args.epochs}: loss={loss_total / samples:.4f}, '
             f'exact={exact:.2%}, case-folded={case_folded:.2%}, top-3={top_three:.2%}',
+            f'time={(time.perf_counter() - started):.2f}',
             flush=True,
         )
         if case_folded > best_case_folded:

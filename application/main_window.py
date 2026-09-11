@@ -5,898 +5,631 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QThreadPool, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QTextCursor
+from PySide6.QtCore import QThreadPool, Qt, QTimer
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QTextCursor
+from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
-    QApplication,
-    QCheckBox,
-    QDialog,
-    QFileDialog,
-    QFrame,
-    QHBoxLayout,
-    QInputDialog,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QSizePolicy,
-    QStatusBar,
-    QTabBar,
-    QTextBrowser,
-    QTextEdit,
-    QToolBar,
-    QVBoxLayout,
-    QWidget,
+    QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QMessageBox, QPushButton, QSplitter, QStatusBar, QTextEdit,
+    QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
-from shiboken6 import isValid
 
-from .calculator import Calculator
-from .canvas import InkCanvas
+from .calculator import MathEvaluationError, MathEvaluator
+from .handwriting_panel import HandwritingPanel
 from .math_recognition import MathRecognizer
-from .notes import NoteStore
+from .notes import NoteDocument, NoteError, NoteManager
 from .settings import ShortcutSettingsDialog, load_shortcut
 from .theme import APP_NAME, AUTOSAVE_MS, STYLESHEET
 from .writing_recognition import HandwritingRecognizer, RecognitionWorker
 
 
-class MarkdownViewer(QTextBrowser):
-    edit_intent = Signal(object)
+class EditorWidget(QWidget):
+    """Owns the main text editing widget without owning document state."""
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.edit_intent.emit(event.position())
-        super().mousePressEvent(event)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.text = QTextEdit()
+        self.text.setObjectName('editor')
+        self.text.setPlaceholderText('Start writing…')
+        self.text.setAcceptRichText(False)
+        layout.addWidget(self.text)
 
-    def keyPressEvent(self, event):
-        editing_keys = (
-            Qt.Key.Key_Backspace,
-            Qt.Key.Key_Delete,
-            Qt.Key.Key_Return,
-            Qt.Key.Key_Enter,
-            Qt.Key.Key_Tab,
-            Qt.Key.Key_Left,
-            Qt.Key.Key_Right,
-            Qt.Key.Key_Up,
-            Qt.Key.Key_Down,
-            Qt.Key.Key_Home,
-            Qt.Key.Key_End,
-        )
-        editable = bool(event.text()) or event.key() in editing_keys
-        if editable and not event.modifiers() & Qt.KeyboardModifier.AltModifier:
-            self.edit_intent.emit(event)
-            return
-        super().keyPressEvent(event)
+    def load_document(self, document):
+        self.text.blockSignals(True)
+        self.text.setPlainText(document.text)
+        self.text.blockSignals(False)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(1540, 940)
-        self.setMinimumSize(1180, 700)
+        self.resize(1420, 900)
+        self.setMinimumSize(1050, 680)
         self.setStyleSheet(STYLESHEET)
-
-        self.store = NoteStore('notes')
+        self.manager = NoteManager('notes')
+        self.store = self.manager
+        self.document: NoteDocument | None = None
+        self.current_note: Path | None = None
+        self.math_contexts: dict[Path, MathEvaluator] = {}
         self.writing = HandwritingRecognizer()
-        self.math = MathRecognizer()
+        self.math_recognizer = MathRecognizer()
         self.thread_pool = QThreadPool.globalInstance()
         self.thread_pool.setMaxThreadCount(1)
-
-        self.current_note = None
-        self.dirty = False
-        self.mode = 'Writing'
-        self.math_expression = ''
-        self.editing = False
-        self._tab_sync = False
         self._recognition_running = False
-        self._recognition_pending = False
-        self._recognition_accept_pending = False
         self._writing_preview = None
         self._writing_preview_revision = None
-        self.handwriting_window = None
-        self.handwriting_canvas = None
-        self.handwriting_info = None
-        self.handwriting_expression = None
+        self.mode = 'text'
+        self.input_mode = 'text'
+        self.math_expression = ''
 
         self._build_actions()
         self._build_ui()
-        self._load_notes()
-        self._new_note_if_empty()
-        self._start_autosave()
-
-    def _build_actions(self):
-        self.actions = {}
-        definitions = [
-            ('new', 'New note', self.new_note),
-            ('open', 'Open note', self.open_external),
-            ('save', 'Save', self.save_note),
-            ('close', 'Close note', self.close_current_note),
-            ('search', 'Search notes', self.focus_search),
-            ('handwriting', 'Handwriting input', self.show_handwriting),
-            ('calculate', 'Calculate', self.calculate_selected),
-            ('edit', 'Edit note', self.toggle_edit_mode),
-            ('settings', 'Settings', self.show_settings),
-        ]
-        for key, text, callback in definitions:
-            action = QAction(text, self)
-            action.setShortcut(QKeySequence(load_shortcut(key)))
-            action.triggered.connect(callback)
-            self.actions[key] = action
-            self.addAction(action)
-
-        self.editor_shortcuts = []
-        editor_shortcuts = (
-            ('Ctrl+Backspace', lambda: self._delete_word(True)),
-            ('Ctrl+Delete', lambda: self._delete_word(False)),
-            ('Ctrl+Shift+Backspace', lambda: self._delete_line(True)),
-            ('Ctrl+Shift+Delete', lambda: self._delete_line(False)),
-            ('Meta+Backspace', lambda: self._delete_line(True)),
-            ('Meta+Delete', lambda: self._delete_line(False)),
-        )
-        for sequence, callback in editor_shortcuts:
-            action = QAction(self)
-            action.setShortcut(QKeySequence(sequence))
-            action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            action.triggered.connect(callback)
-            self.editor_shortcuts.append(action)
-
-    def _build_ui(self):
-        toolbar = QToolBar()
-        toolbar.setMovable(False)
-        for key in ('new', 'open', 'save'):
-            toolbar.addAction(self.actions[key])
-        toolbar.addSeparator()
-        for text, callback in (
-            ('Handwrite', self.show_handwriting),
-            ('Calculate', self.calculate_selected),
-            ('Search', self.focus_search),
-            ('Settings', self.show_settings),
-        ):
-            toolbar.addWidget(self._toolbar_button(text, callback))
-        toolbar.addSeparator()
-
-        self.mode_button = self._toolbar_button('Writing', self._toggle_mode)
-        self.mode_button.setObjectName('modeButton')
-        self.mode_button.setFixedWidth(94)
-        toolbar.addWidget(self.mode_button)
-
-        self.file_tabs = QTabBar()
-        self.file_tabs.setExpanding(False)
-        self.file_tabs.setMovable(True)
-        self.file_tabs.setTabsClosable(False)
-        self.file_tabs.setUsesScrollButtons(True)
-        self.file_tabs.setDocumentMode(True)
-        self.file_tabs.setDrawBase(False)
-        self.file_tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.file_tabs.currentChanged.connect(self._file_tab_changed)
-        toolbar.addWidget(self.file_tabs)
-        self.addToolBar(toolbar)
-
-        root = QWidget()
-        root_layout = QHBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
-        root_layout.addWidget(self._build_left_panel())
-        root_layout.addWidget(self._build_editor_panel(), 1)
-        root_layout.addWidget(self._build_right_panel())
-        self.setCentralWidget(root)
-
-        status = QStatusBar()
-        self.status_label = QLabel('Ready')
-        self.model_label = QLabel(self._model_status())
-        self.word_count_label = QLabel('0 words')
-        status.addWidget(self.status_label)
-        status.addPermanentWidget(self.model_label)
-        status.addPermanentWidget(self.word_count_label)
-        self.setStatusBar(status)
-
-    def _toolbar_button(self, text, callback):
-        button = QPushButton(text)
-        button.clicked.connect(callback)
-        return button
-
-    def _build_left_panel(self):
-        panel = QFrame()
-        panel.setObjectName('sidePanel')
-        panel.setFixedWidth(245)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(9, 10, 9, 10)
-
-        title = QLabel('INKNOTE')
-        title.setObjectName('appTitle')
-        layout.addWidget(title)
-
-        self.search = QLineEdit()
-        self.search.setPlaceholderText('Search notes…')
-        self.search.textChanged.connect(self._filter_notes)
-        layout.addWidget(self.search)
-        layout.addWidget(self._section('VAULT'))
-
-        self.note_list = QListWidget()
-        self.note_list.currentItemChanged.connect(self._note_selected)
-        layout.addWidget(self.note_list, 1)
-
-        new_button = QPushButton('＋  New note')
-        new_button.setObjectName('primary')
-        new_button.clicked.connect(self.new_note)
-        layout.addWidget(new_button)
-        return panel
-
-    def _section(self, text):
-        label = QLabel(text)
-        label.setObjectName('sectionTitle')
-        return label
-
-    def _build_editor_panel(self):
-        panel = QFrame()
-        panel.setObjectName('editorPanel')
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self.view_stack = QWidget()
-        stack = QVBoxLayout(self.view_stack)
-        stack.setContentsMargins(0, 0, 0, 0)
-        stack.setSpacing(0)
-
-        self.viewer = MarkdownViewer()
-        self.viewer.setOpenLinks(False)
-        self.viewer.setObjectName('viewer')
-        self.viewer.setReadOnly(True)
-        self.viewer.edit_intent.connect(self._viewer_edit_intent)
-        stack.addWidget(self.viewer)
-
-        self.editor = QTextEdit()
-        self.editor.setObjectName('editor')
-        self.editor.setPlaceholderText('Start writing…')
-        self.editor.textChanged.connect(self._editor_changed)
-        self.editor.hide()
-        stack.addWidget(self.editor)
-        layout.addWidget(self.view_stack)
-        for action in self.editor_shortcuts:
-            self.editor.addAction(action)
-
-        self.view_hint = QLabel('Rendered Markdown · click or type to edit')
-        self.view_hint.setObjectName('viewModeLabel')
-        layout.addWidget(self.view_hint)
-        return panel
-
-    def _build_right_panel(self):
-        panel = QFrame()
-        panel.setObjectName('rightPanel')
-        panel.setFixedWidth(315)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 10, 12, 10)
-
-        layout.addWidget(self._section('MODE'))
-        self.mode_hint = QLabel('Writing mode: words, sentences and notes')
-        self.mode_hint.setWordWrap(True)
-        self.mode_hint.setObjectName('status')
-        layout.addWidget(self.mode_hint)
-
-        layout.addWidget(self._section('TOOLS'))
-        for text, callback in (
-            ('✎  Handwriting input', self.show_handwriting),
-            ('∑  Calculate selection', self.calculate_selected),
-        ):
-            button = QPushButton(text)
-            button.clicked.connect(callback)
-            layout.addWidget(button)
-
-        self.math_result = QLabel('Math results will appear here.')
-        self.math_result.setWordWrap(True)
-        self.math_result.setObjectName('status')
-        layout.addWidget(self.math_result)
-
-        layout.addWidget(self._section('DOCUMENT'))
-        self.outline = QListWidget()
-        self.outline.itemClicked.connect(self._jump_outline)
-        layout.addWidget(self.outline, 1)
-        return panel
-
-    def _load_notes(self):
-        self.note_list.clear()
-        self.file_tabs.blockSignals(True)
-        while self.file_tabs.count():
-            self.file_tabs.removeTab(0)
-        for path in self.store.files():
-            item = QListWidgetItem(path.stem)
-            item.setData(Qt.ItemDataRole.UserRole, str(path))
-            self.note_list.addItem(item)
-            index = self.file_tabs.addTab(path.stem)
-            self.file_tabs.setTabData(index, str(path))
-        self.file_tabs.blockSignals(False)
-
-    def _new_note_if_empty(self):
-        files = self.store.files()
-        if files:
-            self._select_path(files[0])
-        else:
-            self.new_note()
-
-    def _select_path(self, path):
-        path = Path(path)
-        for i in range(self.note_list.count()):
-            item_path = Path(self.note_list.item(i).data(Qt.ItemDataRole.UserRole))
-            if item_path == path:
-                self.note_list.setCurrentRow(i)
-                return
-
-    def _note_selected(self, current, previous):
-        if current:
-            self._load_note(Path(current.data(Qt.ItemDataRole.UserRole)))
-
-    def _file_tab_changed(self, index):
-        if self._tab_sync or index < 0:
-            return
-        path = self.file_tabs.tabData(index)
-        if path:
-            self._select_path(Path(path))
-
-    def _sync_tabs(self, path):
-        for i in range(self.file_tabs.count()):
-            if self.file_tabs.tabText(i) == Path(path).stem:
-                self._tab_sync = True
-                self.file_tabs.setCurrentIndex(i)
-                self._tab_sync = False
-                return
-
-    def _load_note(self, path):
-        if self.dirty and self.current_note:
-            self.save_note()
-        self.current_note = Path(path)
-        text = self.current_note.read_text(encoding='utf-8')
-        self.editor.blockSignals(True)
-        self.editor.setPlainText(text)
-        self.editor.blockSignals(False)
-        self._render_note(text)
-        self._exit_edit_mode(False)
-        self.setWindowTitle(f'{self.current_note.stem} — {APP_NAME}')
-        self.dirty = False
-        self._update_outline()
-        self._update_counts()
-        self._sync_tabs(path)
-        self.status_label.setText(f'Opened {self.current_note.name}')
-
-    def _render_note(self, text):
-        self.viewer.setMarkdown(text or '')
-
-    def new_note(self):
-        title, ok = QInputDialog.getText(self, 'New note', 'Note name:')
-        if not ok:
-            return
-        path = self.store.create(title or 'Untitled')
-        self._load_notes()
-        self._select_path(path)
-        self.enter_edit_mode()
-
-    def open_external(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Open note', str(self.store.root), 'Markdown (*.md);;Text (*.txt)')
-        if path:
-            external = Path(path)
-            known_paths = {
-                Path(self.note_list.item(i).data(Qt.ItemDataRole.UserRole))
-                for i in range(self.note_list.count())
-            }
-            if external not in known_paths:
-                item = QListWidgetItem(external.stem)
-                item.setData(Qt.ItemDataRole.UserRole, str(external))
-                self.note_list.addItem(item)
-                index = self.file_tabs.addTab(external.stem)
-                self.file_tabs.setTabData(index, str(external))
-            self._select_path(external)
-
-    def save_note(self):
-        if not self.current_note:
-            return
-        text = self.editor.toPlainText()
-        self.current_note.write_text(text, encoding='utf-8')
-        self.dirty = False
-        self._render_note(text)
-        self.status_label.setText(f'Saved {self.current_note.name}')
-        self._load_notes()
-        self._select_path(self.current_note)
-
-    def close_current_note(self):
-        if self.dirty:
-            self.save_note()
-        self.close()
-
-    def _editor_changed(self):
-        self.dirty = True
-        self._render_note(self.editor.toPlainText())
-        self._update_outline()
-        self._update_counts()
-
-    def _start_autosave(self):
+        self._load_tree()
+        notes = self.manager.files()
+        self._open_path(notes[0]) if notes else self.new_note(default_name='Welcome')
         self.autosave_timer = QTimer(self)
         self.autosave_timer.setInterval(AUTOSAVE_MS)
         self.autosave_timer.timeout.connect(self._autosave)
         self.autosave_timer.start()
 
-    def _autosave(self):
-        if not self.dirty or not self.current_note:
+    @property
+    def dirty(self):
+        return bool(self.document and self.document.dirty)
+
+    @dirty.setter
+    def dirty(self, value):
+        if self.document:
+            self.document.dirty = value
+
+    def _build_actions(self):
+        self.actions = {}
+        definitions = (
+            ('new', 'New note', self.new_note), ('open', 'Open…', self.open_external),
+            ('save', 'Save', self.save_note), ('save_as', 'Save As…', self.save_as),
+            ('close', 'Close', self.close), ('search', 'Search notes', self.focus_search),
+            ('handwriting', 'Handwriting panel', self.toggle_handwriting_panel),
+            ('calculate', 'Evaluate', lambda: self.evaluate_expression(insert=True)), ('edit', 'Text/Math mode', self.toggle_input_mode),
+            ('settings', 'Settings', self.show_settings),
+        )
+        for key, label, callback in definitions:
+            action = QAction(label, self)
+            shortcut = load_shortcut(key)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+            action.triggered.connect(callback)
+            self.actions[key] = action
+            self.addAction(action)
+        for shortcut, callback in (
+            ('Ctrl+Shift+S', self.save_as), ('Ctrl+Shift+=', self.insert_math_result),
+            ('Ctrl+Z', lambda: self.editor.text.undo()), ('Ctrl+Shift+Z', lambda: self.editor.text.redo()),
+        ):
+            action = QAction(self)
+            action.setShortcut(QKeySequence(shortcut))
+            action.triggered.connect(callback)
+            self.addAction(action)
+
+    def _build_ui(self):
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        for key in ('new', 'open', 'save', 'save_as'):
+            toolbar.addAction(self.actions[key])
+        toolbar.addSeparator()
+        self.input_mode_button = QPushButton('Text')
+        self.input_mode_button.setObjectName('modeButton')
+        self.input_mode_button.clicked.connect(self.toggle_input_mode)
+        toolbar.addWidget(self.input_mode_button)
+        self.panel_mode_button = QPushButton('Handwriting input')
+        self.panel_mode_button.setCheckable(True)
+        self.panel_mode_button.clicked.connect(self.toggle_handwriting_panel)
+        toolbar.addWidget(self.panel_mode_button)
+        toolbar.addSeparator()
+        toolbar.addAction(self.actions['calculate'])
+        insert_result = QAction('Insert result', self)
+        insert_result.triggered.connect(self.insert_math_result)
+        toolbar.addAction(insert_result)
+        self.addToolBar(toolbar)
+
+        self.sidebar = QWidget()
+        side_layout = QVBoxLayout(self.sidebar)
+        side_layout.setContentsMargins(9, 10, 9, 10)
+        heading = QLabel('INKNOTE LIBRARY')
+        heading.setObjectName('appTitle')
+        side_layout.addWidget(heading)
+        self.search = QTextEdit()
+        self.search.setPlaceholderText('Filter notes…')
+        self.search.setFixedHeight(38)
+        self.search.textChanged.connect(self._filter_tree)
+        side_layout.addWidget(self.search)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.itemDoubleClicked.connect(lambda item, _column: self._activate_item(item))
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tree_menu)
+        side_layout.addWidget(self.tree, 1)
+        buttons = QHBoxLayout()
+        for text, callback in (('+ Note', self.new_note), ('+ Folder', self.new_folder), ('↻', self.refresh)):
+            button = QPushButton(text)
+            button.clicked.connect(callback)
+            buttons.addWidget(button)
+        side_layout.addLayout(buttons)
+
+        self.editor = EditorWidget()
+        self.editor.text.textChanged.connect(self._text_changed)
+        self.handwriting_panel = HandwritingPanel()
+        self.handwriting_panel.hide()
+        self.handwriting_panel.close_requested.connect(self.toggle_handwriting_panel)
+        self.handwriting_panel.recognise_requested.connect(self._recognise_panel)
+        self.handwriting_panel.inspect_requested.connect(self._inspect_panel)
+        self.handwriting_panel.insert_ink_requested.connect(self._insert_panel_as_image)
+        self.handwriting_panel.cleared.connect(self._clear_math_expression)
+
+        editor_container = QWidget()
+        editor_layout = QVBoxLayout(editor_container)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.setSpacing(0)
+        self.vertical_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.vertical_splitter.addWidget(self.editor)
+        self.vertical_splitter.addWidget(self.handwriting_panel)
+        self.vertical_splitter.setStretchFactor(0, 4)
+        self.vertical_splitter.setStretchFactor(1, 1)
+        editor_layout.addWidget(self.vertical_splitter)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.sidebar)
+        splitter.addWidget(editor_container)
+        splitter.setSizes([245, 1175])
+        splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(splitter)
+        status = QStatusBar()
+        self.status_label = QLabel('Ready')
+        self.math_result = QLabel('')
+        self.word_count_label = QLabel('0 words')
+        status.addWidget(self.status_label, 1)
+        status.addPermanentWidget(self.math_result)
+        status.addPermanentWidget(self.word_count_label)
+        self.setStatusBar(status)
+        self.handwriting_panel.configure_mode('text')
+
+    def _load_tree(self):
+        self.tree.clear()
+        root = QTreeWidgetItem(['Notes'])
+        root.setData(0, Qt.ItemDataRole.UserRole, str(self.manager.root))
+        self.tree.addTopLevelItem(root)
+        self._populate_tree(root, self.manager.root)
+        root.setExpanded(True)
+
+    def _populate_tree(self, parent, folder):
+        for path in self.manager.list_entries(folder):
+            item = QTreeWidgetItem([path.stem if path.is_file() else path.name])
+            item.setData(0, Qt.ItemDataRole.UserRole, str(path))
+            parent.addChild(item)
+            if path.is_dir():
+                self._populate_tree(item, path)
+
+    def _selected_path(self):
+        item = self.tree.currentItem()
+        return Path(item.data(0, Qt.ItemDataRole.UserRole)) if item else self.manager.root
+
+    def _selected_folder(self):
+        path = self._selected_path()
+        return path if path.is_dir() else path.parent
+
+    def _activate_item(self, item):
+        path = Path(item.data(0, Qt.ItemDataRole.UserRole))
+        if path.is_file():
+            self._open_path(path)
+
+    def _select_path(self, path):
+        iterator = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        while iterator:
+            item = iterator.pop()
+            if Path(item.data(0, Qt.ItemDataRole.UserRole)) == Path(path):
+                self.tree.setCurrentItem(item)
+                return
+            iterator.extend(item.child(i) for i in range(item.childCount()))
+
+    def _filter_tree(self):
+        query = self.search.toPlainText().strip().casefold()
+        root = self.tree.topLevelItem(0)
+        if not root:
             return
-        text = self.editor.toPlainText()
-        self.current_note.write_text(text, encoding='utf-8')
-        self.dirty = False
-        self.status_label.setText('Autosaved')
-        self._render_note(text)
+        def visit(item):
+            child_match = any(visit(item.child(i)) for i in range(item.childCount()))
+            match = not query or query in item.text(0).casefold() or child_match
+            item.setHidden(not match)
+            return match
+        visit(root)
 
-    def _filter_notes(self, text):
-        query = text.casefold().strip()
-        for i in range(self.note_list.count()):
-            item = self.note_list.item(i)
-            item.setHidden(bool(query) and query not in item.text().casefold())
+    def _tree_menu(self, position):
+        item = self.tree.itemAt(position)
+        if item:
+            self.tree.setCurrentItem(item)
+        path = self._selected_path()
+        menu = QMenu(self)
+        menu.addAction('Open', lambda: self._open_path(path)).setEnabled(path.is_file())
+        menu.addAction('Rename', self.rename_selected).setEnabled(path != self.manager.root)
+        menu.addAction('Duplicate', self.duplicate_selected).setEnabled(path.is_file())
+        menu.addAction('Move to folder…', self.move_selected).setEnabled(path.is_file())
+        menu.addSeparator()
+        menu.addAction('Delete', self.delete_selected).setEnabled(path != self.manager.root)
+        menu.addAction('Reveal note library', self.reveal_storage)
+        menu.exec(self.tree.viewport().mapToGlobal(position))
 
-    def _update_counts(self):
-        words = len(re.findall(r'\b\w+\b', self.editor.toPlainText()))
-        self.word_count_label.setText(f'{words} words')
+    def _confirm_unsaved(self):
+        if not self.dirty:
+            return True
+        answer = QMessageBox.question(self, 'Unsaved changes', 'Save changes before continuing?', QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+        if answer == QMessageBox.StandardButton.Cancel:
+            return False
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save_note()
+        return True
 
-    def _update_outline(self):
-        self.outline.clear()
-        for index, line in enumerate(self.editor.toPlainText().splitlines()):
-            if re.match(r'^#{1,3}\s+', line):
-                item = QListWidgetItem(re.sub(r'^#{1,3}\s+', '', line))
-                item.setData(Qt.ItemDataRole.UserRole, index)
-                self.outline.addItem(item)
+    def _open_path(self, path):
+        if not self._confirm_unsaved():
+            return
+        try:
+            document = self.manager.open_note(path)
+        except NoteError as exc:
+            self._error(str(exc))
+            self.refresh()
+            return
+        self.document = document
+        self.current_note = document.path
+        self.editor.load_document(document)
+        self.math_contexts.setdefault(document.path, MathEvaluator())
+        self.setWindowTitle(f'{document.title} — {APP_NAME}')
+        self._select_path(document.path)
+        self._update_count()
+        self.status_label.setText(f'Opened {document.path.name}')
 
-    def _jump_outline(self, item):
-        self.enter_edit_mode()
-        block_number = item.data(Qt.ItemDataRole.UserRole)
-        block = self.editor.document().findBlockByNumber(block_number)
-        cursor = self.editor.textCursor()
-        cursor.setPosition(block.position())
-        self.editor.setTextCursor(cursor)
-        self.editor.ensureCursorVisible()
-        self.editor.setFocus()
+    def new_note(self, _checked=False, default_name=None):
+        if not self._confirm_unsaved():
+            return
+        name, ok = (default_name, True) if default_name else QInputDialog.getText(self, 'New note', 'Note name:')
+        if not ok:
+            return
+        try:
+            document = self.manager.create_note(name or 'Untitled', self._selected_folder())
+        except NoteError as exc:
+            self._error(str(exc))
+            return
+        self.refresh()
+        self._open_path(document.path)
+
+    def new_folder(self):
+        name, ok = QInputDialog.getText(self, 'New folder', 'Folder name:')
+        if not ok:
+            return
+        try:
+            self.manager.create_folder(name, self._selected_folder())
+            self.refresh()
+            self.status_label.setText(f'Created folder {name}')
+        except NoteError as exc:
+            self._error(str(exc))
+
+    def save_note(self):
+        if not self.document:
+            return False
+        self._sync_document()
+        try:
+            self.manager.save_note(self.document)
+        except NoteError as exc:
+            self._error(str(exc))
+            return False
+        self.status_label.setText(f'Saved {self.document.path.name}')
+        return True
+
+    def save_as(self):
+        if not self.document:
+            return False
+        path, _ = QFileDialog.getSaveFileName(self, 'Save note as', str(self.manager.root / f'{self.document.title}.md'), 'Markdown (*.md);;Text (*.txt)')
+        if not path:
+            return False
+        self._sync_document()
+        try:
+            self.manager.save_note(self.document, path)
+        except NoteError as exc:
+            self._error(str(exc))
+            return False
+        self.current_note = self.document.path
+        self.refresh()
+        self.status_label.setText(f'Saved as {self.document.path.name}')
+        return True
+
+    def open_external(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Open note', str(self.manager.root), 'Notes (*.md *.txt)')
+        if path:
+            self._open_path(Path(path))
+
+    def refresh(self):
+        current = self.document.path if self.document else None
+        self._load_tree()
+        if current:
+            self._select_path(current)
+
+    def rename_selected(self):
+        path = self._selected_path()
+        name, ok = QInputDialog.getText(self, 'Rename', 'New name:', text=path.stem if path.is_file() else path.name)
+        if not ok:
+            return
+        try:
+            target = self.manager.rename_note(path, name)
+            if self.document and self.document.path == path:
+                self.document.path = target
+                self.current_note = target
+            self.refresh()
+        except (NoteError, OSError) as exc:
+            self._error(str(exc))
+
+    def duplicate_selected(self):
+        try:
+            target = self.manager.duplicate_note(self._selected_path())
+            self.refresh()
+            self._select_path(target)
+            self.status_label.setText(f'Duplicated as {target.name}')
+        except NoteError as exc:
+            self._error(str(exc))
+
+    def move_selected(self):
+        folders = [self.manager.root] + [p for p in self.manager.root.rglob('*') if p.is_dir() and not p.name.startswith('.')]
+        labels = ['Notes'] + [str(p.relative_to(self.manager.root)) for p in folders[1:]]
+        label, ok = QInputDialog.getItem(self, 'Move note', 'Destination:', labels, 0, False)
+        if not ok:
+            return
+        try:
+            target = self.manager.move_note(self._selected_path(), folders[labels.index(label)])
+            if self.document and self.document.path.name == target.name:
+                self.document.path = target
+                self.current_note = target
+            self.refresh()
+        except (NoteError, OSError) as exc:
+            self._error(str(exc))
+
+    def delete_selected(self):
+        path = self._selected_path()
+        if QMessageBox.question(self, 'Delete', f'Delete “{path.name}”? This cannot be undone.') != QMessageBox.StandardButton.Yes:
+            return
+        if self.document and (self.document.path == path or path in self.document.path.parents) and not self._confirm_unsaved():
+            return
+        try:
+            self.manager.delete_note(path)
+        except (NoteError, OSError) as exc:
+            self._error(str(exc))
+            return
+        if self.document and not self.document.path.exists():
+            self.document = None
+            self.current_note = None
+            notes = self.manager.files()
+            if notes:
+                self._open_path(notes[0])
+            else:
+                self.new_note(default_name='Untitled')
+        self.refresh()
+
+    def reveal_storage(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.manager.root)))
+
+    def toggle_handwriting_panel(self):
+        visible = not self.handwriting_panel.isVisible()
+        self.handwriting_panel.setVisible(visible)
+        if not visible:
+            self.handwriting_panel.auto_timer.stop()
+        self.panel_mode_button.setChecked(visible)
+        if visible:
+            self.vertical_splitter.setSizes([560, 280])
+        self.status_label.setText('Handwriting panel opened' if visible else 'Handwriting panel closed')
+
+    def toggle_input_mode(self):
+        self.input_mode = 'math' if self.input_mode == 'text' else 'text'
+        self.input_mode_button.setText('Math' if self.input_mode == 'math' else 'Text')
+        self.handwriting_panel.configure_mode(self.input_mode)
+        self.math_expression = ''
+        model = self.math_recognizer if self.input_mode == 'math' else self.writing
+        state = 'ready' if model.ready else 'unavailable'
+        self.status_label.setText(f'{self.input_mode.title()} mode · recogniser {state}')
+
+    def _text_changed(self):
+        if self.document:
+            self.document.text = self.editor.text.toPlainText()
+            self.document.mark_dirty()
+        self._update_count()
+
+    def _sync_document(self):
+        self.document.text = self.editor.text.toPlainText()
+
+    def _autosave(self):
+        if self.dirty:
+            self.save_note()
+            self.status_label.setText('Autosaved')
+
+    def _recognise_panel(self, automatic=False):
+        canvas = self.handwriting_panel.canvas
+        if self._recognition_running:
+            self.status_label.setText('Recognition is already running')
+            if automatic:
+                self.handwriting_panel.auto_timer.start()
+            return
+        if self.input_mode == 'math' and not automatic and not canvas.has_ink() and self.math_expression:
+            self._insert_text_at_cursor(self.math_expression)
+            self.status_label.setText(f'Inserted mathematical expression: {self.math_expression}')
+            self.math_expression = ''
+            self.handwriting_panel.preview.clear()
+            return
+        if not canvas.has_ink():
+            self.status_label.setText('Write something before recognising')
+            return
+        if self.input_mode == 'text' and not automatic and self._writing_preview_revision == canvas.revision:
+            text = self.handwriting_panel.preview.toPlainText().strip()
+            if text:
+                self._insert_text_at_cursor(text)
+                self.status_label.setText('Recognition preview inserted; original ink retained')
+                return
+        if self.input_mode == 'math':
+            self._recognise_math_symbol(automatic)
+            return
+        if not self.writing.ready:
+            if not automatic:
+                self._error(self.writing.error or 'Writing CNN unavailable.')
+            return
+        self._recognition_running = True
+        self.handwriting_panel.set_busy(True)
+        worker = RecognitionWorker(self.writing, canvas.to_pil(), self.handwriting_panel, canvas, self.handwriting_panel.preview, automatic, canvas.revision)
+        worker.signals.finished.connect(self._writing_done)
+        worker.signals.error.connect(self._writing_error)
+        self.thread_pool.start(worker)
+
+    def _writing_done(self, result, panel, canvas, info, automatic, revision):
+        self._recognition_running = False
+        if canvas.revision != revision:
+            info.setPlainText('The ink changed during recognition. Run recognition again.')
+            panel_widget = getattr(self, 'handwriting_panel', None)
+            if panel_widget is not None:
+                panel_widget.auto_timer.start()
+            return
+        text = info.toPlainText().strip() if self._writing_preview_revision == revision else result.text
+        info.setReadOnly(False)
+        info.setPlainText(text)
+        self._writing_preview = result
+        self._writing_preview_revision = revision
+        if automatic:
+            self.status_label.setText('Automatic recognition preview ready')
+        elif text:
+            self._insert_text_at_cursor(text)
+            self.status_label.setText('Recognition complete — text inserted; original ink retained')
+
+    def _recognise_math_symbol(self, automatic):
+        canvas = self.handwriting_panel.canvas
+        if not self.math_recognizer.ready:
+            if not automatic:
+                self._error(self.math_recognizer.error or 'Math CNN unavailable.')
+            return
+        try:
+            candidates = self.math_recognizer.predict_single(canvas.to_pil(), top_k=3)
+        except Exception as exc:
+            self.handwriting_panel.preview.setPlainText(f'Math recognition failed: {exc}')
+            self.status_label.setText('Math recognition failed')
+            return
+        if not candidates:
+            return
+        prediction, confidence = candidates[0]
+        token = self.math_recognizer.replacements.get(prediction, prediction)
+        token = token.replace('\\', '').replace('{}', '').strip()
+        self.math_expression += token
+        self.handwriting_panel.preview.setPlainText(f'{self.math_expression}   ·   last symbol {confidence:.0%}')
+        self.status_label.setText(f'Expression: {self.math_expression}')
+        self.handwriting_panel.auto_timer.stop()
+        canvas.clear()
+        self.handwriting_panel.auto_timer.stop()
+        if not automatic:
+            self._insert_text_at_cursor(self.math_expression)
+            self.status_label.setText(f'Inserted mathematical expression: {self.math_expression}')
+            self.math_expression = ''
+            self.handwriting_panel.preview.clear()
+
+    def _clear_math_expression(self):
+        if self.input_mode == 'math':
+            self.math_expression = ''
+
+    def _writing_error(self, error, panel, canvas, info, automatic, revision):
+        self._recognition_running = False
+        info.setReadOnly(False)
+        info.setPlainText(f'Recognition failed: {error}')
+        self.status_label.setText('Recognition failed')
+
+    def _insert_text_at_cursor(self, text):
+        cursor = self.editor.text.textCursor()
+        cursor.insertText(text)
+        self.editor.text.setTextCursor(cursor)
+        self.editor.text.setFocus()
+
+    def _inspect_panel(self):
+        canvas = self.handwriting_panel.canvas
+        if not canvas.has_ink():
+            self.status_label.setText('Write something before inspecting')
+            return
+        try:
+            started = time.perf_counter()
+            segmented = self.writing.segment(canvas.to_pil())
+            words = sum(len(line) for line in segmented)
+            chars = sum(len(word) for line in segmented for word in line)
+            self.handwriting_panel.preview.setPlainText(f'{len(segmented)} lines · {words} words · {chars} characters · {(time.perf_counter() - started) * 1000:.0f} ms')
+        except Exception as exc:
+            self.handwriting_panel.preview.setPlainText(f'Segmentation failed: {exc}')
+
+    def _insert_panel_as_image(self):
+        canvas = self.handwriting_panel.canvas
+        if not canvas.has_ink() or not self.document:
+            self.status_label.setText('There is no ink to keep')
+            return
+        path = self.manager.handwriting / f'ink-{int(time.time() * 1000)}.png'
+        canvas.export_png(path)
+        relative = path.relative_to(self.manager.root).as_posix()
+        self._insert_text_at_cursor(f'![Handwritten note]({relative})')
+        self.status_label.setText('Handwriting image inserted into note')
+
+    def _expression_at_cursor(self):
+        cursor = self.editor.text.textCursor()
+        if cursor.hasSelection():
+            return cursor.selectedText().replace('\u2029', '\n').strip()
+        return cursor.block().text().strip()
+
+    def evaluate_expression(self, insert=True):
+        if not self.document:
+            return None
+        expression = self._expression_at_cursor()
+        evaluator = self.math_contexts.setdefault(self.document.path, MathEvaluator())
+        try:
+            result = evaluator.evaluate(expression)
+        except MathEvaluationError as exc:
+            self.math_result.setText('Math error')
+            self.status_label.setText(str(exc))
+            return None
+        self.math_result.setText(f'{result.expression} → {result.result}')
+        self.status_label.setText(f'{result.assignment or "Result"}: {result.result}')
+        if insert:
+            cursor = self.editor.text.textCursor()
+            separator = ' → ' if re.search(r'=\s*\?', expression) else ' = '
+            rendered = f'{expression}{separator}{result.result}'
+            if cursor.hasSelection():
+                cursor.insertText(rendered)
+            else:
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock)
+                cursor.insertText(f'{separator}{result.result}')
+            self.editor.text.setTextCursor(cursor)
+            if self.save_note():
+                self.status_label.setText(f'Evaluated and saved: {rendered}')
+        return result
+
+    def insert_math_result(self):
+        self.evaluate_expression(insert=True)
 
     def focus_search(self):
         self.search.setFocus()
         self.search.selectAll()
 
-    def _toggle_mode(self):
-        self.set_mode('Math' if self.mode == 'Writing' else 'Writing')
-
-    def set_mode(self, mode):
-        self.mode = mode
-        self.mode_button.setText(mode)
-        if mode == 'Math':
-            self.mode_hint.setText('Math mode: write one symbol at a time → build an expression → result')
-            if self.math.ready:
-                math_status = 'Math CNN: ready'
-            else:
-                math_status = f'Math CNN unavailable: {self.math.error or "unknown error"}'
-            self.math_result.setText(math_status)
-        else:
-            self.mode_hint.setText('Writing mode: words, sentences and notes')
-            self.math_result.setText('Math results will appear here.')
-        self.model_label.setText(self._model_status())
-        self._resize_handwriting_window()
-
-    def _model_status(self):
-        if self.mode == 'Math':
-            return 'Math CNN ready' if self.math.ready else 'Math CNN unavailable'
-        return 'Writing CNN ready' if self.writing.ready else 'Writing CNN unavailable'
-
-    def toggle_edit_mode(self, *_):
-        if self.editing:
-            self._exit_edit_mode(True)
-        else:
-            self.enter_edit_mode()
-
-    def enter_edit_mode(self, cursor_position=None):
-        if not self.current_note:
-            return
-        if self.editing:
-            self.editor.setFocus()
-            return
-        self.editing = True
-        self.viewer.hide()
-        self.editor.show()
-        self.view_hint.setText('Editing Markdown · Ctrl+E returns to rendered view')
-        self.actions['edit'].setText('View note')
-        if isinstance(cursor_position, int):
-            cursor = self.editor.textCursor()
-            cursor.setPosition(min(cursor_position, len(self.editor.toPlainText())))
-            self.editor.setTextCursor(cursor)
-        self.editor.setFocus()
-
-    def _exit_edit_mode(self, focus=False):
-        self.editing = False
-        self.editor.hide()
-        self.viewer.show()
-        self._render_note(self.editor.toPlainText())
-        self.view_hint.setText('Rendered Markdown · click or type to edit')
-        self.actions['edit'].setText('Edit note')
-        if focus:
-            self.viewer.setFocus()
-
-    def _viewer_edit_intent(self, payload):
-        if isinstance(payload, QKeyEvent):
-            self.enter_edit_mode()
-            self._replay_key(payload)
-            return
-        position = self.viewer.cursorForPosition(payload).position() if hasattr(payload, 'x') else None
-        self.enter_edit_mode(position)
-
-    def _replay_key(self, event):
-        clone = QKeyEvent(
-            QEvent.Type.KeyPress,
-            event.key(),
-            event.modifiers(),
-            event.text(),
-            event.isAutoRepeat(),
-            event.count(),
-        )
-        QApplication.sendEvent(self.editor, clone)
-
     def show_settings(self):
         dialog = ShortcutSettingsDialog(self, self.actions)
         if dialog.exec():
             for key, action in self.actions.items():
-                action.setShortcut(QKeySequence(load_shortcut(key)))
-            self.status_label.setText('Shortcut settings saved')
+                shortcut = load_shortcut(key)
+                if shortcut:
+                    action.setShortcut(QKeySequence(shortcut))
 
-    def show_handwriting(self):
-        if self.handwriting_window is not None:
-            self._resize_handwriting_window()
-            self.handwriting_window.show()
-            self.handwriting_window.raise_()
-            self.handwriting_window.activateWindow()
-            return
+    def _update_count(self):
+        words = len(re.findall(r'\b\w+\b', self.editor.text.toPlainText()))
+        self.word_count_label.setText(f'{words} words')
 
-        dialog = QDialog(self, Qt.WindowType.Tool | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint)
-        dialog.setObjectName('handwritingWindow')
-        dialog.setStyleSheet(STYLESHEET)
-        dialog.setModal(False)
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(10, 8, 10, 9)
-        layout.setSpacing(6)
-        controls = self._build_handwriting_controls(layout)
-        canvas, info, expression_label = self._build_handwriting_canvas(layout)
-        self._connect_handwriting_controls(controls, dialog, canvas, info, expression_label)
-        self._start_recognition_timer(dialog, canvas, info, expression_label)
-
-        dialog.finished.connect(lambda _result: self._handwriting_closed())
-        dialog.setLayout(layout)
-        self.handwriting_window = dialog
-        self.handwriting_canvas = canvas
-        self.handwriting_info = info
-        self.handwriting_expression = expression_label
-        self._resize_handwriting_window()
-        dialog.show()
-        self._position_handwriting_window()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    def _build_handwriting_controls(self, layout):
-        header = QHBoxLayout()
-        header.setSpacing(6)
-        header.addWidget(QLabel('Pause to preview. Press Recognise to insert text.'))
-        header.addStretch()
-
-        trackpad = QCheckBox('Trackpad draw')
-        trackpad.setToolTip(
-            'Move the trackpad without holding the mouse button. '
-            'The pointer starts near the canvas top-left.'
-        )
-        clear = QPushButton('Clear')
-        recognise = QPushButton('Recognise')
-        recognise.setObjectName('primary')
-        inspect = QPushButton('Inspect segments')
-        insert_ink = QPushButton('Insert ink')
-        controls = trackpad, clear, recognise, inspect, insert_ink
-        for control in controls:
-            header.addWidget(control)
-        layout.addLayout(header)
-        return controls
-
-    def _build_handwriting_canvas(self, layout):
-        expression_label = None
-        if self.mode == 'Math':
-            expression_label = QLabel('Expression:  —  • draw one symbol, then pause')
-            expression_label.setObjectName('mathStream')
-            layout.addWidget(expression_label)
-
-            canvas = InkCanvas(pen_width=5, min_size=(190, 190), logical_size=(520, 520))
-            canvas.setFixedSize(190, 190)
-            canvas_row = QHBoxLayout()
-            canvas_row.addStretch()
-            canvas_row.addWidget(canvas)
-            canvas_row.addStretch()
-            layout.addLayout(canvas_row)
-            info = QLabel('Draw one symbol in the square.')
-            self.math_expression = ''
-        else:
-            canvas = InkCanvas(pen_width=5, min_size=(560, 180), logical_size=(1400, 520))
-            canvas.setFixedSize(760, 170)
-            layout.addWidget(canvas, 0, Qt.AlignmentFlag.AlignCenter)
-            info = QLabel('')
-
-        info.setObjectName('status')
-        layout.addWidget(info)
-        return canvas, info, expression_label
-
-    def _connect_handwriting_controls(self, controls, dialog, canvas, info, expression_label):
-        trackpad, clear, recognise, inspect, insert_ink = controls
-        clear.clicked.connect(canvas.clear)
-        trackpad.toggled.connect(lambda enabled: self._set_trackpad_mode(canvas, enabled))
-        recognise.clicked.connect(lambda: self._recognise_canvas(dialog, canvas, info, False, expression_label))
-        inspect.clicked.connect(lambda: self._inspect_segmentation(dialog, canvas, info))
-        insert_ink.clicked.connect(lambda: self._insert_ink(dialog, canvas))
-
-    def _start_recognition_timer(self, dialog, canvas, info, expression_label):
-        is_writing = self.mode == 'Writing'
-        timer = QTimer(dialog)
-        timer.setSingleShot(True)
-        timer.setInterval(1100 if is_writing else 1200)
-        timer.timeout.connect(lambda: self._recognise_canvas(dialog, canvas, info, True, expression_label))
-        canvas.changed.connect(timer.start)
-        setattr(self, '_writing_auto_timer' if is_writing else '_math_auto_timer', timer)
-
-    def _position_handwriting_window(self):
-        if self.handwriting_window is None:
-            return
-        screen = self.handwriting_window.screen() or self.screen()
-        if screen is None:
-            return
-        area = screen.availableGeometry()
-        margin = 24
-        x = area.right() - self.handwriting_window.width() - margin
-        y = area.bottom() - self.handwriting_window.height() - margin
-        self.handwriting_window.move(max(area.left() + margin, x), max(area.top() + margin, y))
-
-    def _set_trackpad_mode(self, canvas, enabled):
-        canvas.set_trackpad_mode(enabled)
-        if not enabled:
-            return
-        canvas.reset_trackpad_pointer()
-
-    def _resize_handwriting_window(self):
-        if self.handwriting_window is None:
-            return
-        self.handwriting_window.setWindowTitle(f'Handwriting — {self.mode} mode')
-        size = (330, 320) if self.mode == 'Math' else (820, 260)
-        self.handwriting_window.resize(*size)
-
-    def _handwriting_closed(self):
-        self._recognition_pending = False
-        self._recognition_accept_pending = False
-        self._writing_preview = None
-        self._writing_preview_revision = None
-        self.handwriting_window = None
-        self.handwriting_canvas = None
-        self.handwriting_info = None
-        self.handwriting_expression = None
-        for timer_name in ('_writing_auto_timer', '_math_auto_timer'):
-            timer = getattr(self, timer_name, None)
-            if timer is not None:
-                timer.stop()
-
-    def _inspect_segmentation(self, dialog, canvas, info):
-        if not canvas.has_ink():
-            info.setText('Write something first.')
-            return
-        if not self.writing.ready:
-            QMessageBox.warning(
-                dialog,
-                'Writing CNN unavailable',
-                self.writing.error or 'Could not load the writing checkpoint.',
-            )
-            return
-        try:
-            started = time.perf_counter()
-            segmented = self.writing.segment(canvas.to_pil())
-            elapsed = (time.perf_counter() - started) * 1000
-            lines = len(segmented)
-            words = sum(len(line) for line in segmented)
-            chars = sum(len(word) for line in segmented for word in line)
-            details = []
-            for line_index, line in enumerate(segmented, start=1):
-                character_counts = ', '.join(str(len(word)) for word in line)
-                details.append(f'Line {line_index}: {len(line)} word(s) — {character_counts} char(s)')
-            summary = (
-                f'SEGMENTATION ACTIVE  ·  {lines} lines · {words} words '
-                f'· {chars} characters · {elapsed:.0f} ms'
-            )
-            info.setText(f'{summary}\n' + ('\n'.join(details) if details else 'No regions detected.'))
-        except Exception as exc:
-            info.setText(f'Segmentation error: {exc}')
-            QMessageBox.critical(dialog, 'Segmentation error', str(exc))
-
-    def _recognise_canvas(self, dialog, canvas, info, automatic=False, expression_label=None):
-        if self._recognition_running:
-            self._recognition_pending = True
-            if not automatic:
-                self._recognition_accept_pending = True
-            return
-        if not canvas.has_ink():
-            if not automatic:
-                QMessageBox.information(dialog, 'Nothing to recognise', 'Write something on the canvas first.')
-            return
-        if self.mode == 'Math':
-            self._recognise_math(dialog, canvas, info, automatic, expression_label)
-            return
-        if not self.writing.ready:
-            if not automatic:
-                QMessageBox.warning(
-                    dialog,
-                    'Writing CNN unavailable',
-                    self.writing.error or 'Could not load the writing checkpoint.',
-                )
-            return
-        if not automatic and self._writing_preview_revision == canvas.revision:
-            self._writing_done(self._writing_preview, dialog, canvas, info, False, canvas.revision)
-            return
-        image = canvas.to_pil()
-        info.setText('Updating preview…' if automatic else 'Segmenting and recognising…')
-        self._recognition_running = True
-        self._recognition_pending = False
-        if not automatic:
-            self._recognition_accept_pending = False
-        worker = RecognitionWorker(self.writing, image, dialog, canvas, info, automatic, canvas.revision)
-        worker.signals.finished.connect(self._writing_done)
-        worker.signals.error.connect(self._writing_error)
-        self.thread_pool.start(worker)
-
-    def _recognise_math(self, dialog, canvas, info, automatic, expression_label):
-        if not self.math.ready:
-            if not automatic:
-                QMessageBox.warning(
-                    dialog,
-                    'Math CNN unavailable',
-                    self.math.error or 'Could not load the math checkpoint.',
-                )
-            return
-        try:
-            candidates = self.math.predict_single(canvas.to_pil(), top_k=3)
-            if not candidates:
-                info.setText('No symbol detected; try again.')
-                return
-
-            prediction, confidence = candidates[0]
-            token = self.math.replacements.get(prediction, prediction)
-            token = token.replace('\\', '').replace('{', '').replace('}', '').replace(' ', '')
-            self.math_expression += token
-            answer = self.math.evaluate(self.math_expression)
-
-            if expression_label is not None:
-                expression_label.setText(f'Expression: {self.math_expression}   →   {answer or "—"}')
-            info.setText(f'Top prediction: {prediction} ({confidence:.0%})')
-            self.math_result.setText(f'Expression: {self.math_expression}\nResult: {answer or "—"}')
-            canvas.clear()
-            self._reset_trackpad_after_recognition(canvas)
-        except Exception as exc:
-            self._reset_trackpad_after_recognition(canvas)
-            info.setText(f'Math recognition error: {exc}')
-            if not automatic:
-                QMessageBox.critical(dialog, 'Math recognition error', str(exc))
-
-    def _writing_done(self, result, dialog, canvas, info, automatic, revision):
-        self._recognition_running = False
-        if dialog is None or not isValid(dialog) or not dialog.isVisible():
-            self._recognition_pending = False
-            return
-        stale = canvas.revision != revision
-        if stale or self._recognition_pending:
-            accept = self._recognition_accept_pending
-            self._recognition_pending = False
-            self._recognition_accept_pending = False
-            QTimer.singleShot(80, lambda: self._retry_writing_recognition(dialog, canvas, info, not accept))
-            return
-        info.setText(
-            f'{"Preview: " if automatic else ""}{result.text or "[no text]"}'
-            f'   ·   {result.lines} lines · {result.words} words · {result.characters} chars'
-            f'   ·   segmentation {result.segmentation_ms:.0f} ms   ·   total {result.elapsed_ms:.0f} ms'
-            f'{"   ·   press Recognise to insert" if automatic else ""}'
-        )
-        if automatic:
-            self._writing_preview = result
-            self._writing_preview_revision = revision
-            return
-        if result.text:
-            self._insert_text_at_cursor(result.text)
-            self.status_label.setText('Handwriting converted and inserted')
-        self._writing_preview = None
-        self._writing_preview_revision = None
-        canvas.clear()
-        self._reset_trackpad_after_recognition(canvas)
-        dialog.close()
-
-    def _writing_error(self, error, dialog, canvas, info, automatic, revision):
-        self._recognition_running = False
-        if dialog is None or not isValid(dialog) or not dialog.isVisible():
-            self._recognition_pending = False
-            return
-        if canvas.revision != revision or self._recognition_pending:
-            accept = self._recognition_accept_pending
-            self._recognition_pending = False
-            self._recognition_accept_pending = False
-            QTimer.singleShot(80, lambda: self._retry_writing_recognition(dialog, canvas, info, not accept))
-            return
-        self._reset_trackpad_after_recognition(canvas)
-        if info is not None:
-            info.setText(f'Recognition error: {error}')
-        if not automatic:
-            QMessageBox.critical(dialog, 'Recognition error', error)
-        self._recognition_pending = False
-        self._recognition_accept_pending = False
-
-    def _retry_writing_recognition(self, dialog, canvas, info, automatic):
-        widgets = (dialog, canvas, info)
-        if all(widget is not None and isValid(widget) for widget in widgets) and dialog.isVisible():
-            self._recognise_canvas(dialog, canvas, info, automatic, None)
-
-    def _reset_trackpad_after_recognition(self, canvas):
-        if canvas is not None and canvas.trackpad_mode:
-            canvas.reset_trackpad_pointer()
-
-    def _insert_text_at_cursor(self, text):
-        self.enter_edit_mode()
-        cursor = self.editor.textCursor()
-        existing = self.editor.toPlainText()
-        prefix = '' if not existing or existing.endswith(('\n', ' ')) else '\n'
-        cursor.insertText(prefix + text)
-        self.editor.setTextCursor(cursor)
-        self.dirty = True
-
-    def _insert_ink(self, dialog, canvas):
-        if not canvas.has_ink() or not self.current_note:
-            return
-        path = self.store.handwriting / f'ink-{int(time.time() * 1000)}.png'
-        canvas.export_png(path)
-        relative_path = path.relative_to(self.store.root).as_posix()
-        self._insert_text_at_cursor(f'\n\n![Handwritten note]({relative_path})\n')
-        dialog.close()
-        self.status_label.setText('Handwriting image inserted')
-
-    def calculate_selected(self):
-        self.enter_edit_mode()
-        cursor = self.editor.textCursor()
-        expression = cursor.selectedText().strip() or Calculator.extract(cursor.block().text())
-        if not expression:
-            QMessageBox.information(self, 'Calculate', 'Select a numeric equation, or place the cursor on one.')
-            return
-        try:
-            result = Calculator.evaluate(expression)
-        except Exception as exc:
-            QMessageBox.warning(self, 'Calculate', f'Could not calculate:\n{exc}')
-            return
-        cursor.insertText(f'{expression} = {result}')
-        self.dirty = True
-        self.status_label.setText(f'Calculated {expression} = {result}')
-
-    def _delete_word(self, backward=True):
-        direction = QTextCursor.MoveOperation.PreviousWord if backward else QTextCursor.MoveOperation.NextWord
-        self._delete_toward(direction)
-
-    def _delete_line(self, backward=True):
-        direction = QTextCursor.MoveOperation.StartOfBlock if backward else QTextCursor.MoveOperation.EndOfBlock
-        self._delete_toward(direction)
-
-    def _delete_toward(self, direction):
-        self.enter_edit_mode()
-        cursor = self.editor.textCursor()
-        if not cursor.hasSelection():
-            cursor.movePosition(direction, QTextCursor.MoveMode.KeepAnchor)
-        cursor.removeSelectedText()
-        self.editor.setTextCursor(cursor)
+    def _error(self, message):
+        self.status_label.setText(message)
+        QMessageBox.warning(self, APP_NAME, message)
 
     def closeEvent(self, event):
-        self._recognition_pending = False
-        self._recognition_running = False
-        for timer_name in ('_writing_auto_timer', '_math_auto_timer'):
-            timer = getattr(self, timer_name, None)
-            if timer is not None:
-                timer.stop()
-        if self.dirty:
-            self.save_note()
-        event.accept()
+        self.autosave_timer.stop()
+        event.accept() if self._confirm_unsaved() else event.ignore()
 
 
 def main():

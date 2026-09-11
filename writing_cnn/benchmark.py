@@ -68,7 +68,10 @@ def benchmark(manifest_path, checkpoint_path=None, limit=None, verbose=True):
     if not recognizer.ready:
         raise RuntimeError(recognizer.error or 'The writing CNN could not be loaded.')
 
-    totals = {'characters': [0, 0], 'words': [0, 0], 'strict_characters': [0, 0]}
+    totals = {
+        'characters': [0, 0], 'words': [0, 0], 'strict_characters': [0, 0],
+        'raw_characters': [0, 0], 'raw_words': [0, 0],
+    }
     for sample in samples:
         image_path = manifest_path.parent / sample['image']
         image = Image.open(image_path).convert('L')
@@ -84,6 +87,10 @@ def benchmark(manifest_path, checkpoint_path=None, limit=None, verbose=True):
         totals['characters'][1] += character_counts[1]
         totals['words'][0] += word_counts[0]
         totals['words'][1] += word_counts[1]
+        totals['raw_characters'][0] += raw_character_counts[0]
+        totals['raw_characters'][1] += raw_character_counts[1]
+        totals['raw_words'][0] += raw_word_counts[0]
+        totals['raw_words'][1] += raw_word_counts[1]
 
         if verbose:
             print(f"{sample['image']} ({result.elapsed_ms:.0f} ms)")
@@ -98,6 +105,10 @@ def benchmark(manifest_path, checkpoint_path=None, limit=None, verbose=True):
     word_errors, words = totals['words']
     print(f'\nAggregate decoded CER: {format_rate((character_errors, characters))} ({character_errors}/{characters})')
     print(f'Aggregate decoded WER: {format_rate((word_errors, words))} ({word_errors}/{words})')
+    print(f'Aggregate raw CER: {format_rate(totals["raw_characters"])} '
+          f'({totals["raw_characters"][0]}/{totals["raw_characters"][1]})')
+    print(f'Aggregate raw WER: {format_rate(totals["raw_words"])} '
+          f'({totals["raw_words"][0]}/{totals["raw_words"][1]})')
     strict_errors, strict_characters = totals['strict_characters']
     print(f'Aggregate strict CER: {format_rate((strict_errors, strict_characters))} ({strict_errors}/{strict_characters})')
 
