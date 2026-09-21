@@ -141,7 +141,7 @@ class HandwritingRecognizer:
         final_lines, selected = self.pipeline.predict_best_segmentation(
             hypotheses, self.model, self.device,
             method='wordfreq_hybrid', character_top_k=8, beam_width=100,
-            frequency_weight=0.50, lm_weight=0.5,
+            frequency_weight=0.20, lm_weight=0.2,
         )
         raw_lines = self.pipeline.predict(selected, self.model, self.device, method='cnn')
         words = sum(len(line) for line in final_lines)
